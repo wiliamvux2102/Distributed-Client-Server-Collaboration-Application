@@ -1,0 +1,58 @@
+# Môi trường Python
+.venv/
+venv/
+env/
+ENV/
+
+# Bytecode và cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Cache kiểm thử, độ bao phủ và công cụ kiểm tra
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Sản phẩm đóng gói Python
+build/
+dist/
+*.egg-info/
+
+# Cấu hình cục bộ và biến môi trường
+.env
+.env.*
+!.env.example
+/config.json
+/config.local.json
+
+# Khóa riêng TLS; vẫn giữ chứng chỉ công khai .crt và .pem
+*.key
+*.p12
+*.pfx
+*private*.pem
+*-key.pem
+*_key.pem
+/certs/private/
+
+# Dữ liệu nhận, file tạm và dữ liệu thử nghiệm cục bộ
+/downloads/
+/tests/data/local/
+*.tmp
+*.part
+*.log
+
+# Cấu hình IDE cá nhân
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# File hệ điều hành
+.DS_Store
+Thumbs.db
+Desktop.ini
