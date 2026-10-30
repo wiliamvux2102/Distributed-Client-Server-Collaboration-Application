@@ -2,6 +2,7 @@ import socket
 import threading
 import json
 import ssl
+from collections.abc import Callable
 from common.protocol import recv_message, send_message
 from common import message_types as mt
 
@@ -26,6 +27,9 @@ MAX_DATAGRAM_SIZE = 2048
 
 HEARTBEAT_INTERVAL = HEARTBEAT_CONFIG["interval_seconds"]
 
+MessageHandler = Callable[[dict], None]
+ErrorHandler = Callable[[str], None]
+
 def discover_server() -> tuple[str, int]:
     """Tìm server qua UDP broadcast và trả về (IP, TCP port)."""
 
@@ -43,7 +47,7 @@ def discover_server() -> tuple[str, int]:
         )
         udp_socket.settimeout(DISCOVERY_TIMEOUT)
 
-        for attempt in range(1, DISCOVERY_ATTEMPTS + 1):
+        for _ in range(DISCOVERY_ATTEMPTS):
             udp_socket.sendto(
                 request_bytes,
                 (DISCOVERY_TARGET, DISCOVERY_PORT),
@@ -54,10 +58,6 @@ def discover_server() -> tuple[str, int]:
                     MAX_DATAGRAM_SIZE
                 )
             except socket.timeout:
-                print(
-                    f"[CLIENT] Chưa nhận phản hồi discovery "
-                    f"(lần {attempt}/{DISCOVERY_ATTEMPTS})."
-                )
                 continue
 
             try:
@@ -107,6 +107,7 @@ def send_heartbeats(
     server_host: str,
     token: str,
     stop_event: threading.Event,
+    on_error: ErrorHandler,
 ) -> None:
     """Gửi heartbeat UDP định kỳ trong lúc client còn hoạt động."""
 
@@ -123,231 +124,220 @@ def send_heartbeats(
                     (server_host, DISCOVERY_PORT),
                 )
             except OSError as error:
-                print(f"[CLIENT] Không gửi được heartbeat: {error}")
+                on_error(f"Không gửi được heartbeat: {error}")
 
             if stop_event.wait(HEARTBEAT_INTERVAL):
                 break
 
 
-def receive_messages(
-    connection: socket.socket,
-    stop_event: threading.Event,
-) -> None:
-    """Thread duy nhất đọc bản tin server gửi về."""
+class ClientSession:
+    """Authenticated client connection with one TCP reader and callbacks."""
 
-    while not stop_event.is_set():
+    def __init__(
+        self,
+        connection: ssl.SSLSocket,
+        server_host: str,
+        username: str,
+        heartbeat_token: str,
+        on_error: ErrorHandler,
+        on_unhandled: MessageHandler,
+    ) -> None:
+        self._connection = connection
+        self.server_host = server_host
+        self.username = username
+        self._heartbeat_token = heartbeat_token
+        self._on_error = on_error
+        self._on_unhandled = on_unhandled
+        self._stop_event = threading.Event()
+        self._bye_event = threading.Event()
+        self._send_lock = threading.Lock()
+        self._handlers_lock = threading.Lock()
+        self._handlers: dict[str, list[MessageHandler]] = {}
+        self._receiver_thread: threading.Thread | None = None
+        self._heartbeat_thread: threading.Thread | None = None
+
+    @classmethod
+    def connect(
+        cls,
+        username: str,
+        on_error: ErrorHandler,
+        on_unhandled: MessageHandler,
+    ) -> "ClientSession":
+        """Discover, connect with TLS, authenticate, and return a session."""
+
+        if not isinstance(username, str) or not username.strip():
+            raise ValueError("Username không được để trống.")
+
+        server_host, server_port = discover_server()
+        connection = connect_tls(server_host, server_port)
+
         try:
-            message = recv_message(connection)
+            greeting = recv_message(connection)
+            if greeting.get("type") != mt.SERVER_READY:
+                raise ValueError("Server chưa sẵn sàng.")
 
-        except (EOFError, OSError, ValueError) as error:
-            if not stop_event.is_set():
-                print(f"\n[CLIENT] Kết nối kết thúc: {error}")
+            send_message(connection, {
+                "type": mt.LOGIN,
+                "username": username.strip(),
+            })
+            login_response = recv_message(connection)
 
-            stop_event.set()
-            return
-
-        message_type = message["type"]
-
-        if message_type == mt.ONLINE_LIST:
-            print(f"\n[CLIENT] Đang online: {message['users']}")
-
-        elif message_type == mt.ECHO_RESULT:
-            print(f"\n[CLIENT] Echo: {message.get('text')}")
-
-        elif message_type == mt.ERROR:
-            print(
-                f"\n[CLIENT] Lỗi {message.get('code')}: "
-                f"{message.get('message')}"
-            )
-
-        elif message_type == mt.BYE:
-            print(f"\n[CLIENT] Server: {message.get('message')}")
-            stop_event.set()
-            return
-
-        elif message_type == mt.DIRECT_DELIVERY:
-            print(
-                f"\n[TIN RIÊNG] {message['sender']}: "
-                f"{message['text']}"
-            )
-
-        elif message_type == mt.DELIVERY_STATUS:
-            if message.get("ok"):
-                print(f"\n[SERVER] {message.get('message')}")
-            else:
-                print(
-                    f"\n[SERVER] Lỗi {message.get('code')}: "
-                    f"{message.get('message')}"
+            if login_response.get("type") != mt.LOGIN_OK:
+                raise ValueError(
+                    f"Đăng nhập lỗi {login_response.get('code')}: "
+                    f"{login_response.get('message')}"
                 )
 
-        else:
-            print(f"\n[CLIENT] Bản tin chưa xử lý: {message_type}")
+            heartbeat_token = login_response.get("heartbeat_token")
+            authenticated_username = login_response.get("username")
+            if not isinstance(heartbeat_token, str):
+                raise ValueError("Server không gửi heartbeat_token hợp lệ.")
+            if not isinstance(authenticated_username, str):
+                raise ValueError("Server không gửi username hợp lệ.")
+
+            connection.settimeout(None)
+            return cls(
+                connection=connection,
+                server_host=server_host,
+                username=authenticated_username,
+                heartbeat_token=heartbeat_token,
+                on_error=on_error,
+                on_unhandled=on_unhandled,
+            )
+        except Exception:
+            connection.close()
+            raise
+
+    def register_handler(
+        self,
+        message_type: str,
+        handler: MessageHandler,
+    ) -> None:
+        """Register a callback for a server message type."""
+
+        if not isinstance(message_type, str) or not message_type:
+            raise ValueError("message_type phải là chuỗi không rỗng.")
+
+        with self._handlers_lock:
+            self._handlers.setdefault(message_type, []).append(handler)
+
+    def send(self, message: dict) -> None:
+        """Send a message through the shared connection lock."""
+
+        if self._stop_event.is_set():
+            raise RuntimeError("Client session đã đóng.")
+
+        with self._send_lock:
+            send_message(self._connection, message)
+
+    def start(self) -> None:
+        """Start the single TCP receiver and UDP heartbeat threads."""
+
+        if self._receiver_thread is not None:
+            raise RuntimeError("Client session đã được khởi động.")
+
+        self._receiver_thread = threading.Thread(
+            target=self._receive_loop,
+            name="client-receiver",
+            daemon=True,
+        )
+        self._heartbeat_thread = threading.Thread(
+            target=send_heartbeats,
+            args=(
+                self.server_host,
+                self._heartbeat_token,
+                self._stop_event,
+                self._on_error,
+            ),
+            name="client-heartbeat",
+            daemon=True,
+        )
+        self._receiver_thread.start()
+        self._heartbeat_thread.start()
+
+    @property
+    def is_closed(self) -> bool:
+        """Whether the session has stopped receiving/sending messages."""
+
+        return self._stop_event.is_set()
+
+    def logout(self, timeout: float = 5.0) -> bool:
+        """Request QUIT and wait for the server's BYE response."""
+
+        if self.is_closed:
+            return True
+
+        self.send({"type": mt.QUIT})
+        if self._bye_event.wait(timeout):
+            return True
+
+        self._on_error("Server chưa xác nhận thoát trong thời gian chờ.")
+        return False
+
+    def close(self) -> None:
+        """Stop background workers and close the TLS socket."""
+
+        self._stop_event.set()
+        try:
+            self._connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self._connection.close()
+        except OSError:
+            pass
+
+        current_thread = threading.current_thread()
+        for worker in (self._receiver_thread, self._heartbeat_thread):
+            if worker is not None and worker is not current_thread:
+                worker.join(timeout=1.0)
+
+    def _receive_loop(self) -> None:
+        """Read TCP frames and dispatch each message to registered callbacks."""
+
+        while not self._stop_event.is_set():
+            try:
+                message = recv_message(self._connection)
+            except (EOFError, OSError, ValueError, ssl.SSLError) as error:
+                if not self._stop_event.is_set():
+                    self._on_error(f"Kết nối kết thúc: {error}")
+                self._stop_event.set()
+                return
+
+            message_type = message["type"]
+            with self._handlers_lock:
+                handlers = tuple(self._handlers.get(message_type, ()))
+
+            if handlers:
+                for handler in handlers:
+                    try:
+                        handler(message)
+                    except Exception as error:
+                        self._on_error(
+                            f"Lỗi xử lý bản tin {message_type}: {error}"
+                        )
+            else:
+                try:
+                    self._on_unhandled(message)
+                except Exception as error:
+                    self._on_error(
+                        f"Lỗi xử lý bản tin chưa đăng ký "
+                        f"{message_type}: {error}"
+                    )
+
+            if message_type == mt.BYE:
+                self._bye_event.set()
+                self._stop_event.set()
+                return
 
 
 def main() -> None:
-    stop_event = threading.Event()
-    receiver = None
-    heartbeat_sender = None
+    """Compatibility entry point; the actual CLI lives in ui.cli."""
 
-    server_host, server_port = discover_server()
-    print(f"[CLIENT] Tìm thấy server tại {server_host}:{server_port}")
+    from ui.cli import main as run_cli
 
-    # connect_tls() kết nối TCP rồi hoàn tất TLS handshake.
-    with connect_tls(server_host, server_port) as connection:
-        try:
-            # Chỉ đọc SERVER_READY sau khi TLS handshake hoàn tất.
-            greeting = recv_message(connection)
-
-            if greeting["type"] != mt.SERVER_READY:
-                raise ValueError("Server chưa sẵn sàng.")
-
-            print(f"[CLIENT] Server: {greeting.get('message')}")
-
-            username = input("Username: ").strip()
-
-            send_message(
-                connection,
-                {
-                    "type": mt.LOGIN,
-                    "username": username,
-                },
-            )
-
-            login_response = recv_message(connection)
-
-            if login_response["type"] != mt.LOGIN_OK:
-                print(
-                    f"[CLIENT] Đăng nhập lỗi "
-                    f"{login_response.get('code')}: "
-                    f"{login_response.get('message')}"
-                )
-                return
-
-            heartbeat_token = login_response.get("heartbeat_token")
-
-            if not isinstance(heartbeat_token, str):
-                raise ValueError(
-                    "Server không gửi heartbeat_token hợp lệ."
-                )
-
-            print(
-                f"[CLIENT] Đăng nhập thành công với tên "
-                f"{login_response['username']}."
-            )
-
-            # Giữ kết nối TCP chờ dữ liệu; heartbeat xử lý liveness.
-            connection.settimeout(None)
-
-            # Thread receiver là luồng duy nhất đọc TCP sau đăng nhập.
-            receiver = threading.Thread(
-                target=receive_messages,
-                args=(connection, stop_event),
-                name="server-receiver",
-                daemon=True,
-            )
-            receiver.start()
-
-            # Heartbeat vẫn chạy qua UDP, độc lập với TLS/TCP.
-            heartbeat_sender = threading.Thread(
-                target=send_heartbeats,
-                args=(server_host, heartbeat_token, stop_event),
-                name="heartbeat-sender",
-                daemon=True,
-            )
-            heartbeat_sender.start()
-
-            print(
-                "[CLIENT] Nhập nội dung; "
-                "/online để xem danh sách; /quit để thoát."
-            )
-
-            while not stop_event.is_set():
-                text = input("Bạn: ")
-
-                # Receiver có thể đã phát hiện server ngắt kết nối
-                # trong lúc main đang chờ nhập.
-                if stop_event.is_set():
-                    break
-
-                if text == "":
-                    print("[CLIENT] Hãy nhập nội dung.")
-                    continue
-
-                if text == "/quit":
-                    send_message(
-                        connection,
-                        {
-                            "type": mt.QUIT,
-                        },
-                    )
-
-                    # Receiver nhận BYE rồi đặt stop_event.
-                    if not stop_event.wait(timeout=5.0):
-                        print("[CLIENT] Server chưa xác nhận thoát.")
-
-                    break
-
-                if text == "/online":
-                    request = {
-                        "type": mt.LIST_ONLINE,
-                    }
-
-                elif text.startswith("/msg "):
-                    parts = text.split(" ", 2)
-
-                    if len(parts) != 3:
-                        print("Cách dùng: /msg <username> <nội dung>")
-                        continue
-
-                    request = {
-                        "type": mt.DIRECT_MESSAGE,
-                        "recipient": parts[1],
-                        "text": parts[2],
-                    }
-
-                else:
-                    request = {
-                        "type": mt.ECHO,
-                        "text": text,
-                    }
-
-                # Main chỉ gửi TCP; receiver là luồng duy nhất nhận TCP.
-                send_message(connection, request)
-
-        finally:
-            # Dừng receiver và heartbeat sender khi rời khỏi phiên.
-            stop_event.set()
-
-            try:
-                connection.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                # Socket có thể đã đóng bởi server.
-                pass
-
-            if receiver is not None:
-                receiver.join(timeout=1.0)
-
-            if heartbeat_sender is not None:
-                heartbeat_sender.join(timeout=1.0)
-
-    print("[CLIENT] Đã đóng kết nối.")
+    run_cli()
 
 
 if __name__ == "__main__":
-    try:
-        main()
-
-    except socket.timeout:
-        print("[CLIENT] Quá thời gian chờ server.")
-
-    except EOFError as error:
-        print(f"[CLIENT] Luồng nhận kết thúc: {error}")
-
-    except ssl.SSLError as error:
-        print(f"[TLS] Không thiết lập hoặc xác minh được TLS: {error}")
-
-    except (OSError, ValueError) as error:
-        print(f"[CLIENT] Lỗi: {error}")
-
-    except KeyboardInterrupt:
-        print("\n[CLIENT] Dừng bằng Ctrl+C.")
+    main()
