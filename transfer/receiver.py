@@ -1,1 +1,248 @@
-# TV3: Nhận chunk, ghi file tạm, ghép file và thông báo tiến trình hoặc lỗi.
+from dataclasses import dataclass
+from pathlib import Path
+import os
+import threading
+from typing import BinaryIO, Callable, Any
+
+from transfer.integrity import verify_file
+
+SendFrameCallable = Callable[[dict[str, Any], bytes], None]
+ProgressCallback = Callable[[str, str, int, int], None]
+CompleteCallback = Callable[[str, str, str], None]
+ErrorCallback = Callable[[str, str, str], None]
+
+
+@dataclass
+class DownloadSession:
+    session_id: str
+    sender: str
+    filename: str
+    filesize: int
+    expected_sha256: str
+    total_chunks: int
+    temp_path: Path
+    file_handle: BinaryIO
+    received_bytes: int = 0
+    next_chunk_index: int = 0
+
+
+class FileReceiver:
+    def __init__(
+        self,
+        username: str,
+        send_frame_fn: SendFrameCallable,
+        download_dir: str | Path = "downloads",
+        on_progress: ProgressCallback | None = None,
+        on_complete: CompleteCallback | None = None,
+        on_error: ErrorCallback | None = None
+    ) -> None:
+        self.username = username
+        self.send_frame = send_frame_fn
+        self.download_dir = Path(download_dir)
+        self.download_dir.mkdir(parents=True, exist_ok=True)
+
+        self.on_progress = on_progress
+        self.on_complete = on_complete
+        self.on_error = on_error
+
+        self._sessions: dict[str, DownloadSession] = {}
+        self._lock = threading.Lock()
+
+    def handle_incoming_message(self, header: dict[str, Any], payload: bytes = b"") -> None:
+        """Entry point for incoming FILE_INIT, FILE_CHUNK, FILE_END, and FILE_ERROR messages."""
+        msg_type = header.get("type")
+        if msg_type == "FILE_INIT":
+            self._handle_file_init(header)
+        elif msg_type == "FILE_CHUNK":
+            self._handle_file_chunk(header, payload)
+        elif msg_type == "FILE_END":
+            self._handle_file_end(header)
+        elif msg_type == "FILE_ERROR":
+            self._handle_file_error(header)
+
+    def _handle_file_init(self, header: dict[str, Any]) -> None:
+        """Initialize a temporary (.part) file session and send FILE_ACCEPT to the sender."""
+        session_id = header.get("session_id")
+        sender = header.get("sender", "unknown")
+        filename = header.get("filename", "unnamed_file")
+        filesize = int(header.get("filesize", 0))
+        sha256 = header.get("sha256", "")
+        total_chunks = int(header.get("total_chunks", 0))
+
+        if not session_id:
+            return
+
+        # Prevent Path Traversal attacks
+        safe_name = Path(filename).name
+        temp_filename = f".{session_id}_{safe_name}.part"
+        temp_path = self.download_dir / temp_filename
+
+        with self._lock:
+            if session_id in self._sessions:
+                self._abort_session_unlocked(session_id, "Duplicate session initialization", notify=False)
+
+            try:
+                file_handle = temp_path.open("wb")
+                session = DownloadSession(
+                    session_id=session_id,
+                    sender=sender,
+                    filename=safe_name,
+                    filesize=filesize,
+                    expected_sha256=sha256,
+                    total_chunks=total_chunks,
+                    temp_path=temp_path,
+                    file_handle=file_handle
+                )
+                self._sessions[session_id] = session
+            except Exception as e:
+                if self.on_error:
+                    self.on_error(session_id, safe_name, f"Failed to create temp file: {e}")
+                return
+
+        # If file is empty (0 bytes), finalize immediately
+        if filesize == 0:
+            self._handle_file_end({"session_id": session_id})
+            return
+
+        # Send FILE_ACCEPT acknowledgment
+        try:
+            self.send_frame({"type": "FILE_ACCEPT", "session_id": session_id}, b"")
+        except Exception as e:
+            self._abort_session(session_id, f"Failed to send FILE_ACCEPT: {e}")
+
+    def _handle_file_chunk(self, header: dict[str, Any], chunk_bytes: bytes) -> None:
+        """Receive an incoming chunk, validate its sequence index, write to .part file, and report progress."""
+        session_id = header.get("session_id")
+        chunk_index = header.get("chunk_index")
+
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                return
+
+            if chunk_index != session.next_chunk_index:
+                self._abort_session_unlocked(
+                    session_id,
+                    f"Chunk sequence error: expected {session.next_chunk_index}, got {chunk_index}",
+                    notify=True
+                )
+                return
+
+            try:
+                session.file_handle.write(chunk_bytes)
+                session.received_bytes += len(chunk_bytes)
+                session.next_chunk_index += 1
+            except Exception as e:
+                self._abort_session_unlocked(session_id, f"Disk write error: {e}", notify=True)
+                return
+
+        if self.on_progress:
+            self.on_progress(session.session_id, session.filename, session.received_bytes, session.filesize)
+
+    def _handle_file_end(self, header: dict[str, Any]) -> None:
+        """Close temp file, verify integrity, rename atomically, and report result."""
+        session_id = header.get("session_id")
+
+        with self._lock:
+            session = self._sessions.pop(session_id, None)
+
+        if not session:
+            return
+
+        try:
+            session.file_handle.flush()
+            session.file_handle.close()
+        except Exception as e:
+            session.temp_path.unlink(missing_ok=True)
+            err_msg = f"Failed to close temp file: {e}"
+            self._send_result(session.session_id, "FAILED", err_msg)
+            if self.on_error:
+                self.on_error(session.session_id, session.filename, err_msg)
+            return
+
+        # Verify integrity
+        is_valid, err_msg = verify_file(session.temp_path, session.filesize, session.expected_sha256)
+
+        if is_valid:
+            final_path = self._resolve_final_path(session.filename)
+            try:
+                os.replace(session.temp_path, final_path)
+                self._send_result(session.session_id, "OK", "")
+                if self.on_complete:
+                    self.on_complete(session.session_id, session.filename, str(final_path))
+            except Exception as e:
+                session.temp_path.unlink(missing_ok=True)
+                err_msg = f"Failed to move file to final destination: {e}"
+                self._send_result(session.session_id, "FAILED", err_msg)
+                if self.on_error:
+                    self.on_error(session.session_id, session.filename, err_msg)
+        else:
+            session.temp_path.unlink(missing_ok=True)
+            self._send_result(session.session_id, "FAILED", err_msg)
+            if self.on_error:
+                self.on_error(session.session_id, session.filename, err_msg)
+
+    def _handle_file_error(self, header: dict[str, Any]) -> None:
+        """Handle error notifications or disconnection from peer."""
+        session_id = header.get("session_id", "")
+        reason = header.get("reason", "File transfer interrupted by peer.")
+        self._abort_session(session_id, reason, notify_peer=False)
+
+    def _abort_session(self, session_id: str, reason: str, notify_peer: bool = True) -> None:
+        """Thread-safe public wrapper to abort a session and clean up resources."""
+        with self._lock:
+            self._abort_session_unlocked(session_id, reason, notify=notify_peer)
+
+    def _abort_session_unlocked(self, session_id: str, reason: str, notify: bool = True) -> None:
+        """Abort session without acquiring lock (internal helper)."""
+        session = self._sessions.pop(session_id, None)
+        if not session:
+            return
+
+        filename = session.filename
+        session.file_handle.close()
+        session.temp_path.unlink(missing_ok=True)
+
+        if notify:
+            try:
+                self.send_frame(
+                    {
+                        "type": "FILE_ERROR",
+                        "session_id": session_id,
+                        "reason": reason
+                    },
+                    b"",
+                )
+            except Exception:
+                pass
+
+        if self.on_error:
+            self.on_error(session_id, filename, reason)
+
+    def _send_result(self, session_id: str, status: str, reason: str) -> None:
+        """Send FILE_RESULT back to sender."""
+        try:
+            self.send_frame(
+                {
+                    "type": "FILE_RESULT",
+                    "session_id": session_id,
+                    "status": status,
+                    "reason": reason
+                },
+                b""
+            )
+        except Exception:
+            pass
+
+    def _resolve_final_path(self, filename: str) -> Path:
+        """Resolve filename collisions in download directory by appending counters (e.g., file (1).ext)."""
+        candidate = self.download_dir / filename
+        if not candidate.exists():
+            return candidate
+        stem, suffix = candidate.stem, candidate.suffix
+        counter = 1
+        while True:
+            new_candidate = self.download_dir / f"{stem} ({counter}){suffix}"
+            if not new_candidate.exists():
+                return new_candidate
+            counter += 1
