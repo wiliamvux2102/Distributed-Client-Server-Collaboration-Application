@@ -2,6 +2,7 @@
 import socket
 import struct
 import json
+from common.app_config import CONFIG
 
 
 # "!I":
@@ -12,7 +13,7 @@ HEADER_FORMAT = "!I"
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 
 # Giới hạn nội dung mỗi frame: 1 MiB.
-MAX_PAYLOAD_SIZE = 1024 * 1024
+MAX_PAYLOAD_SIZE = CONFIG["protocol"]["max_payload_bytes"]
 
 
 def recv_exact(connection: socket.socket, size: int) -> bytes:

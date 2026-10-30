@@ -2,12 +2,17 @@
 import socket
 import threading
 from dataclasses import dataclass, field
+import time
+import secrets
+
 
 @dataclass
 class UserSession:
     connection: socket.socket
     address: tuple[str, int]
+    heartbeat_token: str
     send_lock: threading.Lock = field(default_factory=threading.Lock)
+    last_heartbeat: float = field(default_factory=time.monotonic)
     
 class UserRegistry:
     def __init__(self) -> None:
@@ -16,6 +21,31 @@ class UserRegistry:
 
         # Bảo vệ các thao tác đọc/ghi _users.
         self._lock = threading.Lock()
+
+    def refresh_heartbeat(self, token: str, source_ip: str) -> bool:
+        with self._lock:
+            for session in self._users.values():
+                if (
+                    secrets.compare_digest(session.heartbeat_token, token)
+                    and session.address[0] == source_ip
+                ):
+                    session.last_heartbeat = time.monotonic()
+                    return True
+
+        return False
+
+
+    def remove_stale(self, timeout_seconds: float):
+        now = time.monotonic()
+        expired = []
+
+        with self._lock:
+            for username, session in list(self._users.items()):
+                if now - session.last_heartbeat > timeout_seconds:
+                    expired.append((username, session))
+                    del self._users[username]
+
+        return expired
 
     def get_session(self, username: str) -> UserSession | None:
         """Lấy phiên hiện tại của username, nếu có."""
@@ -28,6 +58,8 @@ class UserRegistry:
         username: str,
         connection: socket.socket,
         address: tuple[str, int],
+        send_lock: object,
+        heartbeat_token: str,
     ) -> bool:
         """Đăng ký username nếu hiện chưa được sử dụng."""
 
@@ -38,6 +70,8 @@ class UserRegistry:
             self._users[username] = UserSession(
                 connection=connection,
                 address=address,
+                heartbeat_token=heartbeat_token,
+                send_lock=send_lock,
             )
 
             return True
