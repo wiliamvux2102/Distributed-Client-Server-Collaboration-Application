@@ -1,5 +1,16 @@
 # Kết quả kiểm thử hạ tầng
 
+> Bảng hạ tầng bên dưới là các lần chạy được ghi nhận trước đó. Smoke test hiện tại của nhánh `feature/chat-ui` được ghi riêng ở phần sau.
+
+## Smoke test trên nhánh `feature/chat-ui`
+
+- Môi trường: Windows, Python 3.13.2, TLS với bộ chứng chỉ/khóa phát triển cục bộ.
+- Server và client chạy cục bộ; discovery UDP mặc định, không thay đổi `config.json`.
+- Hai client đăng nhập qua TLS, gửi/nhận chat riêng và chat chung, nhận `RECIPIENT_OFFLINE`, lấy danh sách online và đăng xuất qua `BYE`: đạt.
+- CLI đăng nhập, chạy `/online`, nhận danh sách, chạy `/quit` và đóng session: đạt.
+- Khởi động server/CLI với console UTF-8 mặc định: đạt.
+- Dùng harness tạm thời trong phiên kiểm thử; không thêm file test vào repository.
+
 ## Môi trường
 
 - Windows, chạy lệnh bằng PowerShell.
@@ -31,12 +42,12 @@ Script tạo 20 client TLS đồng thời. Barrier giữ các session mở cho �
 
 ## Còn cần kiểm thử trước khi bàn giao cuối
 
-- Kiểm thử từ hai máy vật lý trên cùng LAN; `192.168.56.1` có thể là địa chỉ mạng ảo và không chứng minh LAN vật lý.
+- Kiểm thử chat từ hai máy vật lý trên cùng LAN; smoke test hiện tại chỉ chạy trên loopback.
 - Kiểm thử mất mạng kiểu không nhận được TCP FIN/RST để xác nhận riêng thời gian stale heartbeat.
-- Tích hợp và kiểm thử handler chat/file sau khi TV2/TV3 bàn giao implementation.
+- Tích hợp và kiểm thử truyền file sau khi TV3 bàn giao implementation.
 - Thêm kiểm thử tự động trong `tests/infrastructure/`; hiện thư mục này chưa có test case.
 - Ghi thêm log/kết quả cụ thể vào đây nếu nhóm chạy lại trên môi trường hoặc phiên bản code khác.
 
 ## Giới hạn
 
-Discovery, heartbeat và kiểm thử trên đây không chứng minh UDP được bảo vệ. TLS hiện chỉ mã hóa TCP; heartbeat token vẫn nằm trong UDP plaintext. Handler truyền file chưa được tích hợp trong phiên bản được kiểm tra.
+Smoke test loopback không chứng minh hoạt động trên LAN vật lý. TLS hiện chỉ mã hóa TCP; heartbeat token vẫn nằm trong UDP plaintext. Handler truyền file chưa được tích hợp trong phiên bản được kiểm tra.

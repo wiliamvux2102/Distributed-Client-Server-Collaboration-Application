@@ -5,6 +5,7 @@ import ssl
 
 from common.protocol import recv_message, send_message
 from common import message_types as mt
+from common.console import configure_console_utf8
 from infrastructure.authentication import normalize_username
 from infrastructure.user_registry import user_registry
 from infrastructure.udp_service import serve_discovery
@@ -13,6 +14,7 @@ from infrastructure.message_dispatcher import (
     ClientContext,
     MessageDispatcher,
 )
+from chat.server_handler import register_chat_handlers
 from common.app_config import CONFIG
 
 SERVER_CONFIG = CONFIG["server"]
@@ -24,9 +26,6 @@ ACCEPT_TIMEOUT = SERVER_CONFIG["accept_timeout_seconds"]
 
 # Thời gian chờ thao tác trên kết nối của từng client.
 CLIENT_TIMEOUT = SERVER_CONFIG["pre_login_timeout_seconds"]
-MAX_DIRECT_MESSAGE_BYTES = CONFIG["protocol"][
-    "max_direct_message_bytes"
-]
 
 def send_locked(
     connection: socket.socket,
@@ -65,76 +64,11 @@ def handle_list_online(
     })
 
 
-def handle_direct_message(
-    context: ClientContext,
-    message: dict,
-) -> None:
-    """Validate and forward a private message using the client context."""
-
-    try:
-        recipient = normalize_username(message.get("recipient"))
-    except ValueError:
-        context.send({
-            "type": mt.DELIVERY_STATUS,
-            "ok": False,
-            "code": "INVALID_RECIPIENT",
-            "message": "Username người nhận không hợp lệ.",
-        })
-        return
-
-    text = message.get("text")
-    if not isinstance(text, str) or text == "":
-        context.send({
-            "type": mt.DELIVERY_STATUS,
-            "ok": False,
-            "code": "INVALID_TEXT",
-            "message": "Nội dung tin nhắn không hợp lệ.",
-        })
-        return
-
-    if len(text.encode("utf-8")) > MAX_DIRECT_MESSAGE_BYTES:
-        context.send({
-            "type": mt.DELIVERY_STATUS,
-            "ok": False,
-            "code": "MESSAGE_TOO_LARGE",
-            "message": (
-                "Tin nhắn vượt quá giới hạn "
-                f"{MAX_DIRECT_MESSAGE_BYTES} byte."
-            ),
-        })
-        return
-
-    delivered = context.send_to_user(
-        recipient,
-        {
-            "type": mt.DIRECT_DELIVERY,
-            "sender": context.username,
-            "text": text,
-        },
-    )
-
-    if delivered:
-        status = {
-            "type": mt.DELIVERY_STATUS,
-            "ok": True,
-            "message": f"Đã chuyển tin tới {recipient}.",
-        }
-    else:
-        status = {
-            "type": mt.DELIVERY_STATUS,
-            "ok": False,
-            "code": "RECIPIENT_OFFLINE",
-            "message": f"{recipient} hiện không online.",
-        }
-
-    context.send(status)
-
-
 def create_message_dispatcher() -> MessageDispatcher:
     dispatcher = MessageDispatcher()
     dispatcher.register(mt.ECHO, handle_echo)
     dispatcher.register(mt.LIST_ONLINE, handle_list_online)
-    dispatcher.register(mt.DIRECT_MESSAGE, handle_direct_message)
+    register_chat_handlers(dispatcher)
     return dispatcher
 
 
@@ -348,6 +282,8 @@ def send_to_user(username: str, message: dict) -> bool:
         return False
 
 def main() -> None:
+    configure_console_utf8()
+
     # Nạp chứng chỉ và tạo context một lần trước khi nhận client.
     server_tls_context = create_server_context()
     message_dispatcher = create_message_dispatcher()

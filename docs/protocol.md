@@ -34,7 +34,9 @@ TCP dùng frame độ dài cố định ở phần header, theo định dạng:
 | `ONLINE_LIST` | Server → client | `users` | Danh sách username online. |
 | `DIRECT_MESSAGE` | Client → server | `recipient`, `text` | Gửi tin riêng tới username khác. `text` tối đa 64 KiB theo số byte UTF-8. |
 | `DIRECT_DELIVERY` | Server → người nhận | `sender`, `text` | Tin riêng được chuyển tới người nhận. |
-| `DELIVERY_STATUS` | Server → người gửi | `ok`, `message`; có thể có `code` | Kết quả chuyển tin riêng. |
+| `BROADCAST_MESSAGE` | Client → server | `text` | Gửi tin chung. Server lấy username người gửi từ session đã đăng nhập. `text` tối đa 64 KiB theo số byte UTF-8. |
+| `BROADCAST_DELIVERY` | Server → các client khác đang online | `sender`, `text` | Tin chat chung được chuyển tới người nhận; server không gửi lại cho người gửi. |
+| `DELIVERY_STATUS` | Server → người gửi | `ok`, `message`; có thể có `code`, `delivered_count` | Kết quả chuyển tin riêng hoặc chat chung. `ok` cho biết thao tác gửi được server xử lý; chat chung có thể thành công với `delivered_count: 0`. |
 | `FILE_INIT` | Sender → Server → Receiver | `session_id`, `sender`, `receiver`, `filename`, `filesize`, `sha256`, `chunk_size`, `total_chunks` | Khởi tạo phiên truyền file, chứa metadata. |
 | `FILE_ACCEPT` | Receiver → Server → Sender | `session_id` | Đầu nhận xác nhận sẵn sàng nhận file (đã tạo xong file tạm `.part`). |
 | `FILE_CHUNK` | Sender → Server → Receiver | `session_id`, `chunk_index` (kèm binary payload) | Chứa mảnh dữ liệu nhị phân của file. |
@@ -48,7 +50,8 @@ TCP dùng frame độ dài cố định ở phần header, theo định dạng:
 ### Mã lỗi đang được dùng
 
 - Đăng nhập: `LOGIN_REQUIRED`, `INVALID_USERNAME`, `USERNAME_TAKEN`.
-- Tin riêng: `INVALID_RECIPIENT`, `INVALID_TEXT`, `MESSAGE_TOO_LARGE`, `RECIPIENT_OFFLINE`.
+- Chat riêng: `INVALID_RECIPIENT`, `INVALID_TEXT`, `MESSAGE_TOO_LARGE`, `RECIPIENT_OFFLINE`.
+- Chat chung: `INVALID_TEXT`, `MESSAGE_TOO_LARGE`.
 - Truyền file (File Transfer): `ERR_USER_OFFLINE`, `ERR_SESSION_NOT_FOUND`, `ERR_HASH_MISMATCH`, `ERR_SIZE_MISMATCH`, `ERR_DISK_IO`, `ERR_PEER_DISCONNECTED`.
 - Request chung: `UNKNOWN_TYPE`; handler echo có thể trả `INVALID_TEXT`.
 
