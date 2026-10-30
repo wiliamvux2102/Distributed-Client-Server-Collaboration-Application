@@ -1,1 +1,33 @@
-// TV1: Bổ sung cấu hình mẫu gồm IP/port TCP, port UDP, timeout, thư mục nhận file và đường dẫn chứng chỉ.
+{
+  "server": {
+    "tcp_bind_host": "0.0.0.0",
+    "tcp_port": 5000,
+    "tcp_connect_timeout_seconds": 5,
+    "accept_timeout_seconds": 0.5,
+    "pre_login_timeout_seconds": 60
+  },
+  "udp": {
+    "bind_host": "0.0.0.0",
+    "port": 5001,
+    "discovery_target": "255.255.255.255",
+    "discovery_attempts": 3,
+    "discovery_timeout_seconds": 1,
+    "wait_interval_seconds": 0.5,
+    "protocol_version": 1
+  },
+  "heartbeat": {
+    "interval_seconds": 10,
+    "timeout_seconds": 35
+  },
+  "tls": {
+    "minimum_version": "TLSv1.2",
+    "server_name": "collab-server.local",
+    "ca_certificate": "certs/dev-ca.pem",
+    "server_certificate": "certs/server-cert.pem",
+    "server_private_key": "certs/private/server-key.pem"
+  },
+  "protocol": {
+    "max_payload_bytes": 1048576,
+    "max_direct_message_bytes": 65536
+  }
+}
