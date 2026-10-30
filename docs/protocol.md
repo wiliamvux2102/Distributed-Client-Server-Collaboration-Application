@@ -32,7 +32,9 @@ TCP dùng frame độ dài cố định ở phần header, theo định dạng:
 | `ONLINE_LIST` | Server → client | `users` | Danh sách username online. |
 | `DIRECT_MESSAGE` | Client → server | `recipient`, `text` | Gửi tin riêng tới username khác. `text` tối đa 64 KiB theo số byte UTF-8. |
 | `DIRECT_DELIVERY` | Server → người nhận | `sender`, `text` | Tin riêng được chuyển tới người nhận. |
-| `DELIVERY_STATUS` | Server → người gửi | `ok`, `message`; có thể có `code` | Kết quả chuyển tin riêng. |
+| `BROADCAST_MESSAGE` | Client → server | `text` | Gửi tin chung. Server lấy username người gửi từ session đã đăng nhập. `text` tối đa 64 KiB theo số byte UTF-8. |
+| `BROADCAST_DELIVERY` | Server → các client khác đang online | `sender`, `text` | Tin chat chung được chuyển tới người nhận; server không gửi lại cho người gửi. |
+| `DELIVERY_STATUS` | Server → người gửi | `ok`, `message`; có thể có `code`, `delivered_count` | Kết quả chuyển tin riêng hoặc chat chung. `ok` cho biết thao tác gửi được server xử lý; chat chung có thể thành công với `delivered_count: 0`. |
 | `QUIT` | Client → server | — | Yêu cầu kết thúc session. |
 | `BYE` | Server → client | `message` | Xác nhận kết thúc session. |
 | `ERROR` | Server → client | `code`, `message` | Lỗi request hoặc loại message không hỗ trợ. |
@@ -40,7 +42,8 @@ TCP dùng frame độ dài cố định ở phần header, theo định dạng:
 ### Mã lỗi đang được dùng
 
 - Đăng nhập: `LOGIN_REQUIRED`, `INVALID_USERNAME`, `USERNAME_TAKEN`.
-- Tin riêng: `INVALID_RECIPIENT`, `INVALID_TEXT`, `MESSAGE_TOO_LARGE`, `RECIPIENT_OFFLINE`.
+- Chat riêng: `INVALID_RECIPIENT`, `INVALID_TEXT`, `MESSAGE_TOO_LARGE`, `RECIPIENT_OFFLINE`.
+- Chat chung: `INVALID_TEXT`, `MESSAGE_TOO_LARGE`.
 - Request chung: `UNKNOWN_TYPE`; handler echo có thể trả `INVALID_TEXT`.
 
 ## UDP discovery
@@ -79,4 +82,4 @@ Sau LOGIN_OK, client gửi định kỳ:
 
 ## Trạng thái triển khai
 
-`ECHO`, `LIST_ONLINE` và `DIRECT_MESSAGE` được đăng ký trong `MessageDispatcher` và dùng chung interface handler `(ClientContext, message)`. `QUIT` vẫn được xử lý trực tiếp trong connection handler để kết thúc vòng đời phiên. Các loại message cho chat broadcast và truyền file chưa được thêm vào `common/message_types.py`; cần được nhóm thống nhất và bổ sung khi tích hợp handler của TV2/TV3.
+`ECHO`, `LIST_ONLINE`, `DIRECT_MESSAGE` và `BROADCAST_MESSAGE` được đăng ký trong `MessageDispatcher`. Các handler chat trong `chat/server_handler.py` dùng interface `(ClientContext, message)`. Client dùng `ClientSession` để giữ một luồng nhận TCP, đăng ký handler theo `type` và gửi qua send lock chung. `ui/cli.py` sở hữu vòng lặp lệnh. `QUIT` vẫn được xử lý trực tiếp trong connection handler để kết thúc vòng đời phiên. Các loại message truyền file sẽ được bổ sung khi tích hợp handler của TV3.
