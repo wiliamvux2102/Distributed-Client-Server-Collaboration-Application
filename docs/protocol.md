@@ -50,7 +50,7 @@ TCP dùng frame độ dài cố định ở phần header, theo định dạng:
 ### Mã lỗi đang được dùng
 
 - Đăng nhập: `LOGIN_REQUIRED`, `INVALID_USERNAME`, `USERNAME_TAKEN`.
-- Chat riêng: `INVALID_RECIPIENT`, `INVALID_TEXT`, `MESSAGE_TOO_LARGE`, `RECIPIENT_OFFLINE`.
+- Chat riêng: `INVALID_RECIPIENT`, `RECIPIENT_SELF`, `INVALID_TEXT`, `MESSAGE_TOO_LARGE`, `RECIPIENT_OFFLINE`.
 - Chat chung: `INVALID_TEXT`, `MESSAGE_TOO_LARGE`.
 - Truyền file (File Transfer): `ERR_USER_OFFLINE`, `ERR_SESSION_NOT_FOUND`, `ERR_HASH_MISMATCH`, `ERR_SIZE_MISMATCH`, `ERR_DISK_IO`, `ERR_PEER_DISCONNECTED`.
 - Request chung: `UNKNOWN_TYPE`; handler echo có thể trả `INVALID_TEXT`.

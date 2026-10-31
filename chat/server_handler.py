@@ -32,7 +32,12 @@ def _validated_text(message: dict) -> tuple[str | None, str | None]:
     if not isinstance(text, str) or text == "":
         return None, "INVALID_TEXT"
 
-    if len(text.encode("utf-8")) > MAX_CHAT_MESSAGE_BYTES:
+    try:
+        text_size = len(text.encode("utf-8"))
+    except UnicodeEncodeError:
+        return None, "INVALID_TEXT"
+
+    if text_size > MAX_CHAT_MESSAGE_BYTES:
         return None, "MESSAGE_TOO_LARGE"
 
     return text, None
@@ -51,6 +56,14 @@ def handle_direct_message(
             context,
             "INVALID_RECIPIENT",
             "Username người nhận không hợp lệ.",
+        )
+        return
+
+    if recipient == context.username:
+        _send_delivery_error(
+            context,
+            "RECIPIENT_SELF",
+            "Không thể gửi tin riêng cho chính mình.",
         )
         return
 

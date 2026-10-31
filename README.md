@@ -11,7 +11,7 @@
 
 - Python 3.12 trở lên.
 - Kết nối mạng cho TCP port `5000` và UDP port `5001`.
-- Mã hiện dùng thư viện chuẩn Python, gồm `socket`, `ssl`, `threading` và `json`; `requirements.txt` hiện chưa khai báo package bên ngoài.
+- Mạng dùng thư viện chuẩn Python (`socket`, `ssl`, `threading`, `json`); CLI dùng `prompt_toolkit` để giữ prompt và dòng đang nhập ổn định khi có tin đến.
 - Server cần khóa riêng TLS khớp với `certs/server-cert.pem`. Mặc định cấu hình tìm khóa tại `certs/private/server-key.pem`. Khóa riêng không được đưa vào Git và không có trong checkout sạch. Nhận khóa phát triển từ người quản lý chứng chỉ của nhóm hoặc cấu hình một bộ CA/chứng chỉ/khóa phát triển mới đồng bộ cho server và client trước khi chạy.
 
 ## Cài đặt
@@ -19,7 +19,8 @@
 Clone repository và mở terminal tại thư mục gốc dự án. Có thể tạo môi trường ảo riêng:
 
 ```powershell
-py -3.12 -m venv .venv
+# Thay 3.13 bằng phiên bản Python >= 3.12 có trên máy nếu cần.
+py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
@@ -30,7 +31,13 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-Không cần cài package bổ sung theo `requirements.txt` hiện tại.
+Sau khi kích hoạt môi trường ảo, cài dependency của CLI:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+Trên macOS/Linux dùng cùng lệnh `python -m pip install -r requirements.txt`.
 
 ## Cấu hình và TLS
 
@@ -55,7 +62,7 @@ Trước khi chạy server, kiểm tra rằng đường dẫn `tls.server_privat
 Mở một terminal ở thư mục gốc và chạy server:
 
 ```powershell
-py -3.12 -m infrastructure.server
+py -3.13 -m infrastructure.server
 ```
 
 Trên macOS/Linux dùng `python3 -m infrastructure.server`.
@@ -63,7 +70,7 @@ Trên macOS/Linux dùng `python3 -m infrastructure.server`.
 Mở một terminal khác cho mỗi client:
 
 ```powershell
-py -3.12 -m ui.cli
+py -3.13 -m ui.cli
 ```
 
 Trên macOS/Linux dùng `python3 -m ui.cli`. Mỗi client cần một username duy nhất, dài 3–20 ký tự ASCII, chỉ gồm chữ, số và `_`.
