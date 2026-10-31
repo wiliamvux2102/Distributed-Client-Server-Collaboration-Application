@@ -111,7 +111,11 @@ class ClientChat:
         if not isinstance(text, str) or text == "":
             raise ValueError("Nội dung tin nhắn không được để trống.")
 
-        text_size = len(text.encode("utf-8"))
+        try:
+            text_size = len(text.encode("utf-8"))
+        except UnicodeEncodeError as error:
+            raise ValueError("Nội dung tin nhắn không phải UTF-8 hợp lệ.") from error
+
         if text_size > MAX_CHAT_MESSAGE_BYTES:
             raise ValueError(
                 f"Tin nhắn vượt quá giới hạn {MAX_CHAT_MESSAGE_BYTES} byte."

@@ -2,6 +2,7 @@ import socket
 import threading
 import json
 import ssl
+import logging
 from collections.abc import Callable
 from common.protocol import recv_message, send_message
 from common import message_types as mt
@@ -29,6 +30,18 @@ HEARTBEAT_INTERVAL = HEARTBEAT_CONFIG["interval_seconds"]
 
 MessageHandler = Callable[[dict], None]
 ErrorHandler = Callable[[str], None]
+
+
+def _report_error_safely(handler: ErrorHandler, message: str) -> None:
+    """Keep a faulty UI error callback from stopping a network worker."""
+
+    try:
+        handler(message)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Client error callback raised an exception."
+        )
+
 
 def discover_server() -> tuple[str, int]:
     """Tìm server qua UDP broadcast và trả về (IP, TCP port)."""
@@ -124,7 +137,10 @@ def send_heartbeats(
                     (server_host, DISCOVERY_PORT),
                 )
             except OSError as error:
-                on_error(f"Không gửi được heartbeat: {error}")
+                _report_error_safely(
+                    on_error,
+                    f"Không gửi được heartbeat: {error}",
+                )
 
             if stop_event.wait(HEARTBEAT_INTERVAL):
                 break
@@ -271,7 +287,10 @@ class ClientSession:
         if self._bye_event.wait(timeout):
             return True
 
-        self._on_error("Server chưa xác nhận thoát trong thời gian chờ.")
+        _report_error_safely(
+            self._on_error,
+            "Server chưa xác nhận thoát trong thời gian chờ.",
+        )
         return False
 
     def close(self) -> None:
@@ -300,7 +319,10 @@ class ClientSession:
                 message = recv_message(self._connection)
             except (EOFError, OSError, ValueError, ssl.SSLError) as error:
                 if not self._stop_event.is_set():
-                    self._on_error(f"Kết nối kết thúc: {error}")
+                    _report_error_safely(
+                        self._on_error,
+                        f"Kết nối kết thúc: {error}",
+                    )
                 self._stop_event.set()
                 return
 
@@ -313,14 +335,16 @@ class ClientSession:
                     try:
                         handler(message)
                     except Exception as error:
-                        self._on_error(
+                        _report_error_safely(
+                            self._on_error,
                             f"Lỗi xử lý bản tin {message_type}: {error}"
                         )
             else:
                 try:
                     self._on_unhandled(message)
                 except Exception as error:
-                    self._on_error(
+                    _report_error_safely(
+                        self._on_error,
                         f"Lỗi xử lý bản tin chưa đăng ký "
                         f"{message_type}: {error}"
                     )

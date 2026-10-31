@@ -1,1 +1,2 @@
-# Cả nhóm: Liệt kê dependency dùng chung sau khi thống nhất môi trường Python.
+# CLI terminal prompt dependency.
+prompt_toolkit>=3.0,<4

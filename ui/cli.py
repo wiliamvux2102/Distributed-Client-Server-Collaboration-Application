@@ -4,6 +4,9 @@ import socket
 import ssl
 import threading
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.patch_stdout import patch_stdout
+
 from common import message_types as mt
 from common.console import configure_console_utf8
 from chat.client_chat import ClientChat
@@ -11,16 +14,12 @@ from infrastructure.client_connection import ClientSession
 
 
 _OUTPUT_LOCK = threading.Lock()
-_INPUT_ACTIVE = threading.Event()
 
 
 def _print_async(text: str) -> None:
-    """Print a background event and show the prompt again."""
-
+    """Print a background event; PromptSession redraws the active input."""
     with _OUTPUT_LOCK:
-        print(f"\n{text}")
-        if _INPUT_ACTIVE.is_set():
-            print("Bạn> ", end="", flush=True)
+        print(text, flush=True)
 
 
 def _make_chat_callbacks():
@@ -113,22 +112,30 @@ def _process_input(line: str, session: ClientSession, chat: ClientChat) -> bool:
             print("Cách dùng: /msg <username> <nội dung>")
             return True
 
-        chat.send_direct(parts[1], parts[2])
-        print(f"[RIÊNG tới {parts[1]}] {parts[2]}")
+        recipient = parts[1].strip()
+        if recipient == session.username:
+            print("[LỖI] Không thể gửi tin riêng cho chính mình.")
+            return True
+
+        with _OUTPUT_LOCK:
+            chat.send_direct(recipient, parts[2])
+            print(f"[RIÊNG tới {recipient}] {parts[2]}")
         return True
 
     if line.startswith("/all "):
         text = line[len("/all "):]
-        chat.send_broadcast(text)
-        print(f"[CHUNG bạn] {text}")
+        with _OUTPUT_LOCK:
+            chat.send_broadcast(text)
+            print(f"[CHUNG bạn] {text}")
         return True
 
     if line.startswith("/"):
         print("Lệnh không hợp lệ. Gõ /help để xem các lệnh.")
         return True
 
-    chat.send_broadcast(line)
-    print(f"[CHUNG bạn] {line}")
+    with _OUTPUT_LOCK:
+        chat.send_broadcast(line)
+        print(f"[CHUNG bạn] {line}")
     return True
 
 
@@ -136,6 +143,7 @@ def main() -> None:
     """Connect, log in, start callbacks, and run the CLI input loop."""
 
     configure_console_utf8()
+    prompt_session = PromptSession()
     session: ClientSession | None = None
     try:
         username = input("Username: ").strip()
@@ -156,29 +164,29 @@ def main() -> None:
         session.register_handler(mt.ONLINE_LIST, _handle_online_list)
         session.register_handler(mt.ERROR, _handle_server_error)
         session.register_handler(mt.BYE, _handle_bye)
-        session.start()
 
-        print(f"Đăng nhập thành công với username {session.username}.")
-        _print_help()
+        # patch_stdout lets receiver-thread callbacks print above the active
+        # prompt and lets PromptSession redraw the partially typed line.
+        with patch_stdout():
+            session.start()
+            print(f"Đăng nhập thành công với username {session.username}.")
+            _print_help()
 
-        while not session.is_closed:
-            _INPUT_ACTIVE.set()
-            try:
-                line = input("Bạn> ")
-            except EOFError:
-                session.logout()
-                break
-            finally:
-                _INPUT_ACTIVE.clear()
-
-            if session.is_closed:
-                break
-
-            try:
-                if not _process_input(line, session, chat):
+            while not session.is_closed:
+                try:
+                    line = prompt_session.prompt("Bạn> ")
+                except EOFError:
+                    session.logout()
                     break
-            except (OSError, RuntimeError, ValueError) as error:
-                print(f"[LỖI] {error}")
+
+                if session.is_closed:
+                    break
+
+                try:
+                    if not _process_input(line, session, chat):
+                        break
+                except (OSError, RuntimeError, ValueError) as error:
+                    print(f"[LỖI] {error}")
 
     except socket.timeout:
         print("[LỖI] Quá thời gian chờ server.")

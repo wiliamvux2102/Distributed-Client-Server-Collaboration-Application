@@ -9,7 +9,9 @@
 - Hai client đăng nhập qua TLS, gửi/nhận chat riêng và chat chung, nhận `RECIPIENT_OFFLINE`, lấy danh sách online và đăng xuất qua `BYE`: đạt.
 - CLI đăng nhập, chạy `/online`, nhận danh sách, chạy `/quit` và đóng session: đạt.
 - Khởi động server/CLI với console UTF-8 mặc định: đạt.
-- Dùng harness tạm thời trong phiên kiểm thử; không thêm file test vào repository.
+- Smoke test dùng harness tạm thời; regression cases được bổ sung trong `tests/chat/test_chat_regressions.py`.
+- Regression tests (Python `unittest`): server/CLI từ chối nhắn riêng cho chính mình; callback chỉ phát nội dung để `PromptSession`/`patch_stdout` quản lý prompt; Unicode lỗi bị từ chối; callback báo lỗi bị lỗi không làm thoát luồng mạng: 5/5 đạt.
+- Lệnh chạy regression suite: `py -3.13 -m unittest discover -s tests -t . -v`.
 
 ## Môi trường
 
