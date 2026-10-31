@@ -77,6 +77,7 @@ Trên macOS/Linux dùng `python3 -m ui.cli`. Mỗi client cần một username d
 | `/online` | Xem username đang online. |
 | `/msg <username> <nội dung>` | Gửi tin riêng. |
 | `/all <nội dung>` | Gửi chat chung. |
+| `/sendfile <username> <đường_dẫn_file>` | Gửi file tới người dùng khác. |
 | `/help` | Hiện hướng dẫn. |
 | `/quit` | Đăng xuất và đóng kết nối. |
 

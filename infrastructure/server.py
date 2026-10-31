@@ -15,6 +15,7 @@ from infrastructure.message_dispatcher import (
     MessageDispatcher,
 )
 from chat.server_handler import register_chat_handlers
+from transfer.server_handler import register_file_transfer_handlers, file_transfer_server_handler
 from common.app_config import CONFIG
 
 SERVER_CONFIG = CONFIG["server"]
@@ -69,6 +70,7 @@ def create_message_dispatcher() -> MessageDispatcher:
     dispatcher.register(mt.ECHO, handle_echo)
     dispatcher.register(mt.LIST_ONLINE, handle_list_online)
     register_chat_handlers(dispatcher)
+    register_file_transfer_handlers(dispatcher)
     return dispatcher
 
 
@@ -238,6 +240,7 @@ def handle_client(
 
             if removed:
                 print(f"[SERVER] {username} đã offline.")
+                file_transfer_server_handler.on_client_disconnect(username)
 
 
         try:

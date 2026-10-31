@@ -8,6 +8,7 @@ from common import message_types as mt
 from common.console import configure_console_utf8
 from chat.client_chat import ClientChat
 from infrastructure.client_connection import ClientSession
+from transfer.sender import ClientFileTransferManager
 
 
 _OUTPUT_LOCK = threading.Lock()
@@ -83,13 +84,14 @@ def _print_help() -> None:
         "  /online                 Xem danh sách người đang online\n"
         "  /msg <user> <nội dung>  Gửi tin riêng\n"
         "  /all <nội dung>         Gửi chat chung\n"
+        "  /sendfile <user> <path> Gửi file tới người dùng khác\n"
         "  /help                   Xem hướng dẫn\n"
         "  /quit                   Thoát\n"
         "Có thể nhập văn bản thường để gửi chat chung."
     )
 
 
-def _process_input(line: str, session: ClientSession, chat: ClientChat) -> bool:
+def _process_input(line: str, session: ClientSession, chat: ClientChat, ft_manager: ClientFileTransferManager) -> bool:
     """Process one user input line; return False when the CLI should exit."""
 
     if not line.strip():
@@ -123,6 +125,15 @@ def _process_input(line: str, session: ClientSession, chat: ClientChat) -> bool:
         print(f"[CHUNG bạn] {text}")
         return True
 
+    if line.startswith("/sendfile "):
+        parts = line.split(maxsplit=2)
+        if len(parts) != 3:
+            print("Cách dùng: /sendfile <username> <đường_dẫn_file>")
+            return True
+
+        ft_manager.send_file(parts[1], parts[2])
+        return True
+
     if line.startswith("/"):
         print("Lệnh không hợp lệ. Gõ /help để xem các lệnh.")
         return True
@@ -153,6 +164,13 @@ def main() -> None:
         )
         chat.register_handlers(session.register_handler)
 
+        ft_manager = ClientFileTransferManager(
+            username=session.username,
+            send_fn=session.send,
+            print_fn=_print_async,
+        )
+        ft_manager.register_handlers(session.register_handler)
+
         session.register_handler(mt.ONLINE_LIST, _handle_online_list)
         session.register_handler(mt.ERROR, _handle_server_error)
         session.register_handler(mt.BYE, _handle_bye)
@@ -175,7 +193,7 @@ def main() -> None:
                 break
 
             try:
-                if not _process_input(line, session, chat):
+                if not _process_input(line, session, chat, ft_manager):
                     break
             except (OSError, RuntimeError, ValueError) as error:
                 print(f"[LỖI] {error}")

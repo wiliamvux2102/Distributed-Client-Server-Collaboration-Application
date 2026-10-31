@@ -1,9 +1,14 @@
+"""
+File integrity verification and SHA-256 calculation.
+"""
+
+from __future__ import annotations
 import hashlib
 import math
 from pathlib import Path
 from typing import TypedDict
 
-DEFAULT_CHUNK_SIZE = 64 * 1024  # 64 KB
+DEFAULT_CHUNK_SIZE = 64 * 1024  # 64 KB per chunk
 
 
 class FileMetadata(TypedDict):
@@ -15,20 +20,20 @@ class FileMetadata(TypedDict):
 
 
 def calculate_sha256(file_path: str | Path, chunk_size: int = DEFAULT_CHUNK_SIZE) -> str:
-    """Calculate SHA-256 checksum of a file by reading in chunks to conserve RAM."""
+    """Calculate the SHA-256 checksum of a file by reading incrementally."""
     path = Path(file_path)
     if not path.is_file():
         raise FileNotFoundError(f"File not found: {path}")
 
     hasher = hashlib.sha256()
-    with path.open("rb") as f:
-        while chunk := f.read(chunk_size):
+    with path.open("rb") as file_handle:
+        while chunk := file_handle.read(chunk_size):
             hasher.update(chunk)
     return hasher.hexdigest()
 
 
 def get_file_metadata(file_path: str | Path, chunk_size: int = DEFAULT_CHUNK_SIZE) -> FileMetadata:
-    """Extract complete file metadata before sending a FILE_INIT message."""
+    """Extract metadata (filename, size, hash, chunk count) before initiating a transfer."""
     path = Path(file_path)
     if not path.is_file():
         raise FileNotFoundError(f"File does not exist or is a directory: {path}")
@@ -42,7 +47,7 @@ def get_file_metadata(file_path: str | Path, chunk_size: int = DEFAULT_CHUNK_SIZ
         "filesize": filesize,
         "sha256": sha256_hash,
         "chunk_size": chunk_size,
-        "total_chunks": total_chunks
+        "total_chunks": total_chunks,
     }
 
 
@@ -50,9 +55,9 @@ def verify_file(
     file_path: str | Path,
     expected_size: int,
     expected_sha256: str,
-    chunk_size: int = DEFAULT_CHUNK_SIZE
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
 ) -> tuple[bool, str]:
-    """Verify received file against expected size and SHA-256 hash."""
+    """Verify that a received file matches the expected byte size and SHA-256 hash."""
     path = Path(file_path)
     if not path.is_file():
         return False, "Temporary file does not exist on disk."
@@ -67,5 +72,5 @@ def verify_file(
             return False, "SHA-256 hash mismatch."
 
         return True, "OK"
-    except Exception as e:
-        return False, f"Integrity check error: {e}"
+    except Exception as error:
+        return False, f"Integrity check error: {error}"
