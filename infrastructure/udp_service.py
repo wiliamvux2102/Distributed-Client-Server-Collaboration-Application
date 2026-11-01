@@ -30,6 +30,11 @@ def disconnect_expired_sessions() -> None:
             pass
 
         print(f"[UDP] {username} hết heartbeat, đã đóng phiên.")
+        try:
+            from transfer.server_handler import file_transfer_server_handler
+            file_transfer_server_handler.on_client_disconnect(username)
+        except Exception:
+            pass
 
 def serve_discovery(stop_event: threading.Event) -> None:
     """Nghe yêu cầu discovery và heartbeat qua UDP."""

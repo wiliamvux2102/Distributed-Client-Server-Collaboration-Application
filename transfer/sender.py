@@ -7,6 +7,7 @@ import base64
 from dataclasses import dataclass, field
 from pathlib import Path
 import threading
+import time
 import uuid
 from typing import Callable, Any
 
@@ -209,6 +210,28 @@ class FileSender:
             if self.on_error:
                 self.on_error(session_id, session.filename, reason)
 
+    def cancel_all(self, reason: str = "Client disconnected") -> None:
+        """Cancel all active upload sessions."""
+        with self._lock:
+            session_ids = list(self._sessions.keys())
+        for session_id in session_ids:
+            self.cancel_transfer(session_id, reason)
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format byte counts into human-readable strings (B, KB, MB)."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
+def _render_bar(pct: float, width: int = 15) -> str:
+    """Render a clean text progress bar."""
+    filled = max(0, min(width, int(width * pct / 100)))
+    return "█" * filled + "░" * (width - filled)
+
 
 class ClientFileTransferManager:
     """Coordinates FileSender and FileReceiver for the ClientSession and CLI interface."""
@@ -218,10 +241,15 @@ class ClientFileTransferManager:
         username: str,
         send_fn: Callable[[dict[str, Any]], None],
         print_fn: Callable[[str], None],
+        status_update_fn: Callable[[], None] | None = None,
     ) -> None:
         self.username = username
         self.send_fn = send_fn
         self.print_fn = print_fn
+        self.status_update_fn = status_update_fn
+        self._active_transfers: dict[str, dict[str, Any]] = {}
+        self._last_milestones: dict[str, int] = {}
+        self._lock = threading.Lock()
 
         self.sender = FileSender(
             username=username,
@@ -240,6 +268,40 @@ class ClientFileTransferManager:
             on_error=self._on_error,
         )
 
+    def cleanup(self, reason: str = "Client disconnected") -> None:
+        """Abort all active uploads and downloads, cleaning up all temporary files."""
+        self.receiver.abort_all(reason)
+        self.sender.cancel_all(reason)
+        with self._lock:
+            self._active_transfers.clear()
+            self._last_milestones.clear()
+        self._trigger_update()
+
+    def get_active_status(self) -> str | None:
+        """Return formatted progress string for UI status bar/toolbar, without chat spam."""
+        with self._lock:
+            if not self._active_transfers:
+                return None
+            items = []
+            for info in self._active_transfers.values():
+                fn = info["filename"]
+                direction = "📤 Đang gửi" if info["direction"] == "upload" else "📥 Đang nhận"
+                cur = info["current"]
+                tot = info["total"]
+                pct = (cur / tot * 100) if tot > 0 else 100.0
+                cur_str = _format_size(cur)
+                tot_str = _format_size(tot)
+                bar = _render_bar(pct)
+                items.append(f"{direction} '{fn}': [{bar}] {pct:.1f}% ({cur_str}/{tot_str})")
+            return " | ".join(items)
+
+    def _trigger_update(self) -> None:
+        if self.status_update_fn:
+            try:
+                self.status_update_fn()
+            except Exception:
+                pass
+
     def _send_frame(self, header: dict[str, Any], payload: bytes = b"") -> None:
         message = dict(header)
         if payload:
@@ -256,9 +318,32 @@ class ClientFileTransferManager:
                 pass
 
         msg_type = message.get("type", "")
-        if msg_type in ("FILE_INIT", "FILE_CHUNK", "FILE_END", "FILE_ERROR"):
+        if msg_type == "FILE_ERROR":
+            session_id = message.get("session_id", "")
+            with self._lock:
+                self._active_transfers.pop(session_id, None)
+                self._last_milestones.pop(session_id, None)
+            self._trigger_update()
+            # Forward error to both sender and receiver so active upload or download is notified and cleaned up
+            self.sender.handle_incoming_message(message, payload)
+            self.receiver.handle_incoming_message(message, payload)
+        elif msg_type in ("FILE_INIT", "FILE_CHUNK", "FILE_END"):
             if msg_type == "FILE_INIT":
-                self.print_fn(f"[FILE] Incoming transfer '{message.get('filename')}' from '{message.get('sender')}'. Downloading...")
+                filename = message.get("filename", "unnamed_file")
+                sender = message.get("sender", "unknown")
+                filesize = int(message.get("filesize", 0))
+                session_id = message.get("session_id", "")
+                with self._lock:
+                    self._active_transfers[session_id] = {
+                        "filename": filename,
+                        "direction": "download",
+                        "current": 0,
+                        "total": filesize,
+                    }
+                    self._last_milestones[session_id] = 0
+                size_str = f" ({_format_size(filesize)})" if filesize > 0 else ""
+                self.print_fn(f"[FILE] Đang nhận '{filename}'{size_str} từ '{sender}'...")
+                self._trigger_update()
             self.receiver.handle_incoming_message(message, payload)
         elif msg_type in ("FILE_ACCEPT", "FILE_RESULT"):
             self.sender.handle_incoming_message(message, payload)
@@ -279,24 +364,74 @@ class ClientFileTransferManager:
     def send_file(self, recipient: str, filepath: str | Path) -> None:
         """CLI entrypoint for the /sendfile command."""
         try:
-            path = Path(filepath)
+            cleaned_path = str(filepath).strip("\"' ")
+            path = Path(cleaned_path)
             if not path.is_file():
                 self.print_fn(f"[ERROR] File not found: {path}")
                 return
-            self.print_fn(f"[FILE] Starting transfer of '{path.name}' to '{recipient}'...")
-            self.sender.start_transfer(recipient, path)
+            session_id = self.sender.start_transfer(recipient, path)
+            filesize = path.stat().st_size
+            with self._lock:
+                self._active_transfers[session_id] = {
+                    "filename": path.name,
+                    "direction": "upload",
+                    "current": 0,
+                    "total": filesize,
+                }
+                self._last_milestones[session_id] = 0
+            size_str = _format_size(filesize)
+            self.print_fn(f"[FILE] Bắt đầu gửi '{path.name}' ({size_str}) tới '{recipient}'...")
+            self._trigger_update()
         except Exception as error:
             self.print_fn(f"[FILE ERROR] {error}")
 
     def _on_progress(self, session_id: str, filename: str, current: int, total: int) -> None:
-        pct = (current / total * 100) if total > 0 else 100
-        self.print_fn(f"[FILE] Progress {filename}: {current}/{total} bytes ({pct:.1f}%)")
+        with self._lock:
+            info = self._active_transfers.get(session_id)
+            if not info:
+                info = {
+                    "filename": filename,
+                    "direction": "upload",
+                    "current": current,
+                    "total": total,
+                }
+                self._active_transfers[session_id] = info
+            else:
+                info["current"] = current
+                info["total"] = total
+
+            # For multi-chunk transfers (> 1 chunk = 64KB), display milestones at 25%, 50%, 75%
+            if total > DEFAULT_CHUNK_SIZE:
+                pct = int((current / total) * 100)
+                milestone = (pct // 25) * 25
+                last = self._last_milestones.get(session_id, 0)
+                if 0 < milestone < 100 and milestone > last:
+                    self._last_milestones[session_id] = milestone
+                    cur_str = _format_size(current)
+                    tot_str = _format_size(total)
+                    bar = _render_bar(milestone)
+                    direction = "Gửi" if info.get("direction") == "upload" else "Nhận"
+                    self.print_fn(f"[FILE] {direction} '{filename}': [{bar}] {milestone}% ({cur_str}/{tot_str})")
+
+        self._trigger_update()
 
     def _on_complete(self, session_id: str, filename: str, msg: str) -> None:
-        self.print_fn(f"[FILE DONE] Successfully sent '{filename}': {msg}")
+        with self._lock:
+            self._active_transfers.pop(session_id, None)
+            self._last_milestones.pop(session_id, None)
+        self._trigger_update()
+        self.print_fn(f"[FILE DONE] Đã gửi thành công '{filename}'.")
 
     def _on_complete_recv(self, session_id: str, filename: str, saved_path: str) -> None:
-        self.print_fn(f"[FILE DONE] Received and saved '{filename}' at: {saved_path}")
+        with self._lock:
+            self._active_transfers.pop(session_id, None)
+            self._last_milestones.pop(session_id, None)
+        self._trigger_update()
+        self.print_fn(f"[FILE DONE] Đã nhận và lưu '{filename}' tại: {saved_path}")
 
     def _on_error(self, session_id: str, filename: str, err: str) -> None:
+        with self._lock:
+            self._active_transfers.pop(session_id, None)
+            self._last_milestones.pop(session_id, None)
+        self._trigger_update()
         self.print_fn(f"[FILE ERROR] {filename}: {err}")

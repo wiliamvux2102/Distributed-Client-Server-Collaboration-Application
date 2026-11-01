@@ -59,14 +59,29 @@ class FileTransferServerHandler:
     def _handle_init(self, sender_user: str, header: dict[str, Any]) -> None:
         """Validate recipient online status, create session entry, and forward FILE_INIT."""
         session_id = header.get("session_id")
-        receiver = header.get("receiver")
+        receiver = header.get("receiver") or header.get("recipient")
         filename = header.get("filename", "unknown")
         filesize = int(header.get("filesize", 0))
 
         # Enforce sender authenticity to prevent username spoofing
         header["sender"] = sender_user
+        if receiver:
+            header["receiver"] = receiver
 
         if not session_id or not receiver:
+            return
+
+        if receiver == sender_user:
+            self.send_to_user(
+                sender_user,
+                {
+                    "type": "FILE_ERROR",
+                    "session_id": session_id,
+                    "code": "ERR_RECIPIENT_SELF",
+                    "reason": "Không thể gửi file cho chính mình.",
+                },
+                b"",
+            )
             return
 
         if not self.is_user_online(receiver):

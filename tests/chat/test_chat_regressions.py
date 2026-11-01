@@ -2,8 +2,14 @@
 
 import contextlib
 import io
+from pathlib import Path
+import sys
 import unittest
 from unittest.mock import Mock, patch
+
+_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 from chat.client_chat import ClientChat
 from chat.server_handler import (

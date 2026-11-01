@@ -240,7 +240,7 @@ def handle_client(
 
             if removed:
                 print(f"[SERVER] {username} đã offline.")
-                file_transfer_server_handler.on_client_disconnect(username)
+            file_transfer_server_handler.on_client_disconnect(username)
 
 
         try:

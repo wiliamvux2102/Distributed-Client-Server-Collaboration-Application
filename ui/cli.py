@@ -142,8 +142,15 @@ def _process_input(
             print("Cách dùng: /sendfile <username> <đường_dẫn_file>")
             return True
 
+        recipient = parts[1].strip()
+        filepath = parts[2].strip("\"' ")
+
+        if recipient == session.username:
+            print("[LỖI] Không thể gửi file cho chính mình.")
+            return True
+
         if ft_manager is not None:
-            ft_manager.send_file(parts[1], parts[2])
+            ft_manager.send_file(recipient, filepath)
         else:
             print("[LỖI] Trình quản lý truyền file chưa được khởi tạo.")
         return True
@@ -164,6 +171,7 @@ def main() -> None:
     configure_console_utf8()
     prompt_session = PromptSession()
     session: ClientSession | None = None
+
     try:
         username = input("Username: ").strip()
         session = ClientSession.connect(
@@ -223,6 +231,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nĐã nhận Ctrl+C, đang đóng phiên.")
     finally:
+        if ft_manager is not None:
+            ft_manager.cleanup("Client disconnected")
         if session is not None:
             session.close()
         print("Đã đóng kết nối.")

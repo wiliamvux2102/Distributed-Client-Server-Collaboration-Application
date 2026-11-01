@@ -1,0 +1,282 @@
+"""
+Unit tests for transfer/sender.py.
+"""
+
+from __future__ import annotations
+from pathlib import Path
+import shutil
+import sys
+import tempfile
+import time
+import unittest
+
+_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from transfer.sender import FileSender, ClientFileTransferManager
+from transfer.integrity import calculate_sha256
+
+
+class TestSender(unittest.TestCase):
+    """Test suite for FileSender and ClientFileTransferManager."""
+
+    def setUp(self) -> None:
+        self.test_dir = Path(tempfile.mkdtemp())
+        self.file_path = self.test_dir / "upload.txt"
+        self.content = b"Sender test file content with multiple chunks."
+        self.file_path.write_bytes(self.content)
+
+        self.sent_frames = []
+        self.sender = FileSender(
+            username="alice",
+            send_frame_fn=lambda h, p: self.sent_frames.append((h, p)),
+            chunk_size=10,
+        )
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def test_start_transfer_dispatches_file_init_frame(self) -> None:
+        session_id = self.sender.start_transfer("bob", self.file_path)
+        self.assertIsInstance(session_id, str)
+        self.assertEqual(len(self.sent_frames), 1)
+
+        init_header, payload = self.sent_frames[0]
+        self.assertEqual(init_header["type"], "FILE_INIT")
+        self.assertEqual(init_header["sender"], "alice")
+        self.assertEqual(init_header["receiver"], "bob")
+        self.assertEqual(init_header["filename"], "upload.txt")
+        self.assertEqual(init_header["filesize"], len(self.content))
+        self.assertEqual(init_header["sha256"], calculate_sha256(self.file_path))
+        self.assertEqual(payload, b"")
+
+    def test_send_file_alias_matches_start_transfer(self) -> None:
+        session_id = self.sender.send_file("bob", self.file_path)
+        self.assertIsInstance(session_id, str)
+        self.assertEqual(self.sent_frames[0][0]["type"], "FILE_INIT")
+
+    def test_start_transfer_missing_file_raises_error(self) -> None:
+        with self.assertRaises(FileNotFoundError):
+            self.sender.start_transfer("bob", self.test_dir / "non_existent.bin")
+
+    def test_file_accept_triggers_background_chunk_streaming(self) -> None:
+        session_id = self.sender.start_transfer("bob", self.file_path)
+        self.sent_frames.clear()
+
+        # Simulate receiving FILE_ACCEPT from receiver
+        self.sender.handle_incoming_message({"type": "FILE_ACCEPT", "session_id": session_id})
+
+        # Wait for worker thread to stream chunks and FILE_END
+        start = time.time()
+        while time.time() - start < 3.0:
+            types = [h["type"] for h, p in self.sent_frames]
+            if "FILE_END" in types:
+                break
+            time.sleep(0.02)
+
+        types = [h["type"] for h, p in self.sent_frames]
+        self.assertIn("FILE_CHUNK", types)
+        self.assertIn("FILE_END", types)
+
+    def test_file_accept_zero_byte_file_sends_file_end(self) -> None:
+        empty_file = self.test_dir / "empty.txt"
+        empty_file.write_bytes(b"")
+        session_id = self.sender.start_transfer("bob", empty_file)
+        self.sent_frames.clear()
+
+        self.sender.handle_incoming_message({"type": "FILE_ACCEPT", "session_id": session_id})
+        start = time.time()
+        while time.time() - start < 3.0:
+            types = [h["type"] for h, p in self.sent_frames]
+            if "FILE_END" in types:
+                break
+            time.sleep(0.02)
+
+        types = [h["type"] for h, p in self.sent_frames]
+        self.assertNotIn("FILE_CHUNK", types)
+        self.assertIn("FILE_END", types)
+
+    def test_cancel_transfer_halts_streaming_and_sends_file_error(self) -> None:
+        session_id = self.sender.start_transfer("bob", self.file_path)
+        self.sender.cancel_transfer(session_id, "User requested cancel")
+        self.assertEqual(len(self.sent_frames), 2)  # FILE_INIT + FILE_ERROR
+        self.assertEqual(self.sent_frames[-1][0]["type"], "FILE_ERROR")
+
+    def test_file_result_ok_triggers_completion_callback(self) -> None:
+        session_id = self.sender.start_transfer("bob", self.file_path)
+        completed = []
+        self.sender.on_complete = lambda sid, fn, msg: completed.append((sid, fn))
+
+        self.sender.handle_incoming_message({"type": "FILE_RESULT", "session_id": session_id, "status": "OK"})
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(completed[0][0], session_id)
+
+    def test_file_result_failed_triggers_error_callback(self) -> None:
+        session_id = self.sender.start_transfer("bob", self.file_path)
+        errors = []
+        self.sender.on_error = lambda sid, fn, err: errors.append(err)
+
+        self.sender.handle_incoming_message(
+            {"type": "FILE_RESULT", "session_id": session_id, "status": "FAILED", "reason": "Hash mismatch"}
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Hash mismatch", errors[0])
+
+    def test_file_error_halts_session_and_triggers_error_callback(self) -> None:
+        session_id = self.sender.start_transfer("bob", self.file_path)
+        errors = []
+        self.sender.on_error = lambda sid, fn, err: errors.append(err)
+
+        self.sender.handle_incoming_message(
+            {"type": "FILE_ERROR", "session_id": session_id, "reason": "Connection dropped"}
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Connection dropped", errors[0])
+
+    def test_client_transfer_manager_dispatch_and_send(self) -> None:
+        messages_sent = []
+        ui_prints = []
+        manager = ClientFileTransferManager(
+            username="alice",
+            send_fn=lambda msg: messages_sent.append(msg),
+            print_fn=lambda text: ui_prints.append(text),
+        )
+
+        # Test invalid file path
+        manager.send_file("bob", self.test_dir / "missing.txt")
+        self.assertTrue(any("not found" in p.lower() or "không tồn tại" in p.lower() for p in ui_prints))
+
+        # Test valid file path sends FILE_INIT
+        ui_prints.clear()
+        manager.send_file("bob", self.file_path)
+        self.assertTrue(any(m.get("type") == "FILE_INIT" for m in messages_sent))
+        self.assertFalse(any("error" in p.lower() for p in ui_prints), f"Unexpected error printed: {ui_prints}")
+        status = manager.get_active_status()
+        self.assertIsNotNone(status)
+        self.assertIn("upload.txt", status)
+
+    def test_client_transfer_manager_send_file_with_quoted_path(self) -> None:
+        messages_sent = []
+        ui_prints = []
+        manager = ClientFileTransferManager(
+            username="alice",
+            send_fn=lambda msg: messages_sent.append(msg),
+            print_fn=lambda text: ui_prints.append(text),
+        )
+
+        quoted_path = f'"{self.file_path}"'
+        manager.send_file("bob", quoted_path)
+        self.assertEqual(len(messages_sent), 1)
+        self.assertEqual(messages_sent[0]["type"], "FILE_INIT")
+        self.assertFalse(any("error" in p.lower() for p in ui_prints), f"Unexpected error printed: {ui_prints}")
+
+    def test_client_file_transfer_manager_full_streaming_e2e(self) -> None:
+        """Test full ClientFileTransferManager transfer flow with chunks, progress, and completion."""
+        alice_prints = []
+        bob_prints = []
+        clients = {}
+
+        def send_network(source_user: str, message: dict) -> None:
+            target = "bob" if source_user == "alice" else "alice"
+            clients[target].handle_incoming(dict(message))
+
+        alice_manager = ClientFileTransferManager(
+            username="alice",
+            send_fn=lambda msg: send_network("alice", msg),
+            print_fn=lambda text: alice_prints.append(text),
+        )
+        bob_manager = ClientFileTransferManager(
+            username="bob",
+            send_fn=lambda msg: send_network("bob", msg),
+            print_fn=lambda text: bob_prints.append(text),
+        )
+        bob_manager.receiver.download_dir = self.test_dir / "downloads"
+        bob_manager.receiver.download_dir.mkdir(exist_ok=True)
+
+        clients["alice"] = alice_manager
+        clients["bob"] = bob_manager
+
+        # Alice sends file to Bob
+        alice_manager.send_file("bob", self.file_path)
+
+        # Wait for background streaming and verification to complete
+        start = time.time()
+        while time.time() - start < 3.0:
+            if any("FILE DONE" in p for p in alice_prints) and any("FILE DONE" in p for p in bob_prints):
+                break
+            time.sleep(0.02)
+
+        # Assert no errors occurred anywhere in the process
+        self.assertFalse(any("FILE ERROR" in p for p in alice_prints), f"Alice had errors: {alice_prints}")
+        self.assertFalse(any("FILE ERROR" in p for p in bob_prints), f"Bob had errors: {bob_prints}")
+
+        # Assert successful completion
+        self.assertTrue(any("FILE DONE" in p for p in alice_prints))
+        self.assertTrue(any("FILE DONE" in p for p in bob_prints))
+
+        # Verify saved file content matches
+        saved_file = bob_manager.receiver.download_dir / "upload.txt"
+        self.assertTrue(saved_file.exists())
+        self.assertEqual(saved_file.read_bytes(), self.content)
+
+    def test_client_transfer_manager_handles_file_error_for_sender(self) -> None:
+        messages_sent = []
+        ui_prints = []
+        manager = ClientFileTransferManager(
+            username="alice",
+            send_fn=lambda msg: messages_sent.append(msg),
+            print_fn=lambda text: ui_prints.append(text),
+        )
+
+        # Start transfer
+        manager.send_file("bob", self.file_path)
+        session_id = messages_sent[0]["session_id"]
+        self.assertIsNotNone(manager.get_active_status())
+
+        # Simulate receiving FILE_ERROR (e.g. recipient offline or error)
+        manager.handle_incoming({
+            "type": "FILE_ERROR",
+            "session_id": session_id,
+            "code": "ERR_USER_OFFLINE",
+            "reason": "User 'bob' is currently offline.",
+        })
+
+        # Must report error to UI and clear active transfer
+        self.assertTrue(any("offline" in p.lower() or "FILE ERROR" in p for p in ui_prints))
+        self.assertIsNone(manager.get_active_status())
+
+    def test_client_transfer_manager_cleanup_on_disconnect(self) -> None:
+        """Test that cleanup() clears active transfers and deletes temporary files."""
+        manager = ClientFileTransferManager(
+            username="alice",
+            send_fn=lambda msg: None,
+            print_fn=lambda text: None,
+        )
+        manager.receiver.download_dir = self.test_dir / "downloads"
+        manager.receiver.download_dir.mkdir(exist_ok=True)
+
+        # Simulate incoming transfer initializing a .part file
+        manager.handle_incoming({
+            "type": "FILE_INIT",
+            "session_id": "sid_cleanup",
+            "sender": "bob",
+            "filename": "cleanup.bin",
+            "filesize": 1024,
+            "sha256": "0" * 64,
+            "total_chunks": 1,
+        })
+
+        temp_part = manager.receiver.download_dir / ".sid_cleanup_cleanup.bin.part"
+        self.assertTrue(temp_part.exists())
+
+        # Disconnect triggers cleanup
+        manager.cleanup("Client disconnected")
+
+        # Must delete temp file and clear status
+        self.assertFalse(temp_part.exists())
+        self.assertIsNone(manager.get_active_status())
+
+
+if __name__ == "__main__":
+    unittest.main()

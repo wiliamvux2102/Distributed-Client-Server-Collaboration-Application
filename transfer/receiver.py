@@ -49,6 +49,7 @@ class FileReceiver:
         self.send_frame = send_frame_fn
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(parents=True, exist_ok=True)
+        self.clean_stale_temp_files()
 
         self.on_progress = on_progress
         self.on_complete = on_complete
@@ -56,6 +57,25 @@ class FileReceiver:
 
         self._sessions: dict[str, DownloadSession] = {}
         self._lock = threading.Lock()
+
+    def clean_stale_temp_files(self) -> None:
+        """Remove any leftover .part files from previous interrupted sessions."""
+        try:
+            for p in self.download_dir.iterdir():
+                if p.is_file() and (p.name.endswith(".part") or ".part" in p.name):
+                    try:
+                        p.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def abort_all(self, reason: str = "Client disconnected") -> None:
+        """Abort all active download sessions and delete their temporary .part files."""
+        with self._lock:
+            session_ids = list(self._sessions.keys())
+        for session_id in session_ids:
+            self._abort_session(session_id, reason, notify_peer=False)
 
     def handle_incoming_message(self, header: dict[str, Any], payload: bytes = b"") -> None:
         """Route incoming FILE_INIT, FILE_CHUNK, FILE_END, and FILE_ERROR frames."""
@@ -213,7 +233,16 @@ class FileReceiver:
             session.file_handle.close()
         except Exception:
             pass
-        session.temp_path.unlink(missing_ok=True)
+
+        try:
+            session.temp_path.unlink(missing_ok=True)
+        except Exception:
+            try:
+                import time
+                time.sleep(0.05)
+                session.temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         if notify:
             try:
