@@ -161,6 +161,9 @@ class FileSender:
                                 session.filesize,
                             )
 
+                        # Yield GIL briefly so UI/receiver threads can render real-time progress
+                        time.sleep(0.001)
+
             # Signal completion after all chunks have been streamed
             if not session.cancel_event.is_set():
                 self.send_frame(
@@ -228,9 +231,13 @@ def _format_size(size_bytes: int) -> str:
 
 
 def _render_bar(pct: float, width: int = 15) -> str:
-    """Render a clean text progress bar."""
+    """Render a clean text progress bar (pip/npm/cargo style)."""
     filled = max(0, min(width, int(width * pct / 100)))
-    return "█" * filled + "░" * (width - filled)
+    if filled >= width:
+        return "=" * width
+    if filled > 0:
+        return "=" * (filled - 1) + ">" + "-" * (width - filled)
+    return "-" * width
 
 
 class ClientFileTransferManager:
@@ -248,7 +255,6 @@ class ClientFileTransferManager:
         self.print_fn = print_fn
         self.status_update_fn = status_update_fn
         self._active_transfers: dict[str, dict[str, Any]] = {}
-        self._last_milestones: dict[str, int] = {}
         self._lock = threading.Lock()
 
         self.sender = FileSender(
@@ -274,26 +280,30 @@ class ClientFileTransferManager:
         self.sender.cancel_all(reason)
         with self._lock:
             self._active_transfers.clear()
-            self._last_milestones.clear()
         self._trigger_update()
 
     def get_active_status(self) -> str | None:
-        """Return formatted progress string for UI status bar/toolbar, without chat spam."""
+        """Return formatted progress string for live inline CLI status, without chat spam."""
         with self._lock:
             if not self._active_transfers:
                 return None
             items = []
             for info in self._active_transfers.values():
                 fn = info["filename"]
-                direction = "📤 Đang gửi" if info["direction"] == "upload" else "📥 Đang nhận"
+                short_fn = fn if len(fn) <= 22 else fn[:19] + "..."
+                peer = info.get("peer", "")
+                if info["direction"] == "upload":
+                    header = f"[FILE] Gửi -> {peer}: {short_fn}" if peer else f"[FILE] Gửi: {short_fn}"
+                else:
+                    header = f"[FILE] Nhận <- {peer}: {short_fn}" if peer else f"[FILE] Nhận: {short_fn}"
                 cur = info["current"]
                 tot = info["total"]
                 pct = (cur / tot * 100) if tot > 0 else 100.0
                 cur_str = _format_size(cur)
                 tot_str = _format_size(tot)
                 bar = _render_bar(pct)
-                items.append(f"{direction} '{fn}': [{bar}] {pct:.1f}% ({cur_str}/{tot_str})")
-            return " | ".join(items)
+                items.append(f"{header}\n[{bar}] {pct:5.1f}% ({cur_str}/{tot_str})")
+            return "\n".join(items)
 
     def _trigger_update(self) -> None:
         if self.status_update_fn:
@@ -303,6 +313,19 @@ class ClientFileTransferManager:
                 pass
 
     def _send_frame(self, header: dict[str, Any], payload: bytes = b"") -> None:
+        if header.get("type") == "FILE_INIT":
+            session_id = header.get("session_id", "")
+            if session_id:
+                with self._lock:
+                    self._active_transfers[session_id] = {
+                        "filename": header.get("filename", "unnamed_file"),
+                        "peer": header.get("receiver", ""),
+                        "direction": "upload",
+                        "current": 0,
+                        "total": int(header.get("filesize", 0)),
+                    }
+                self._trigger_update()
+
         message = dict(header)
         if payload:
             message["binary_payload_base64"] = base64.b64encode(payload).decode("utf-8")
@@ -322,7 +345,6 @@ class ClientFileTransferManager:
             session_id = message.get("session_id", "")
             with self._lock:
                 self._active_transfers.pop(session_id, None)
-                self._last_milestones.pop(session_id, None)
             self._trigger_update()
             # Forward error to both sender and receiver so active upload or download is notified and cleaned up
             self.sender.handle_incoming_message(message, payload)
@@ -336,13 +358,11 @@ class ClientFileTransferManager:
                 with self._lock:
                     self._active_transfers[session_id] = {
                         "filename": filename,
+                        "peer": sender,
                         "direction": "download",
                         "current": 0,
                         "total": filesize,
                     }
-                    self._last_milestones[session_id] = 0
-                size_str = f" ({_format_size(filesize)})" if filesize > 0 else ""
-                self.print_fn(f"[FILE] Đang nhận '{filename}'{size_str} từ '{sender}'...")
                 self._trigger_update()
             self.receiver.handle_incoming_message(message, payload)
         elif msg_type in ("FILE_ACCEPT", "FILE_RESULT"):
@@ -369,19 +389,7 @@ class ClientFileTransferManager:
             if not path.is_file():
                 self.print_fn(f"[ERROR] File not found: {path}")
                 return
-            session_id = self.sender.start_transfer(recipient, path)
-            filesize = path.stat().st_size
-            with self._lock:
-                self._active_transfers[session_id] = {
-                    "filename": path.name,
-                    "direction": "upload",
-                    "current": 0,
-                    "total": filesize,
-                }
-                self._last_milestones[session_id] = 0
-            size_str = _format_size(filesize)
-            self.print_fn(f"[FILE] Bắt đầu gửi '{path.name}' ({size_str}) tới '{recipient}'...")
-            self._trigger_update()
+            self.sender.start_transfer(recipient, path)
         except Exception as error:
             self.print_fn(f"[FILE ERROR] {error}")
 
@@ -391,6 +399,7 @@ class ClientFileTransferManager:
             if not info:
                 info = {
                     "filename": filename,
+                    "peer": "",
                     "direction": "upload",
                     "current": current,
                     "total": total,
@@ -400,38 +409,34 @@ class ClientFileTransferManager:
                 info["current"] = current
                 info["total"] = total
 
-            # For multi-chunk transfers (> 1 chunk = 64KB), display milestones at 25%, 50%, 75%
-            if total > DEFAULT_CHUNK_SIZE:
-                pct = int((current / total) * 100)
-                milestone = (pct // 25) * 25
-                last = self._last_milestones.get(session_id, 0)
-                if 0 < milestone < 100 and milestone > last:
-                    self._last_milestones[session_id] = milestone
-                    cur_str = _format_size(current)
-                    tot_str = _format_size(total)
-                    bar = _render_bar(milestone)
-                    direction = "Gửi" if info.get("direction") == "upload" else "Nhận"
-                    self.print_fn(f"[FILE] {direction} '{filename}': [{bar}] {milestone}% ({cur_str}/{tot_str})")
-
         self._trigger_update()
 
     def _on_complete(self, session_id: str, filename: str, msg: str) -> None:
         with self._lock:
-            self._active_transfers.pop(session_id, None)
-            self._last_milestones.pop(session_id, None)
+            info = self._active_transfers.pop(session_id, None)
         self._trigger_update()
-        self.print_fn(f"[FILE DONE] Đã gửi thành công '{filename}'.")
+        peer = info.get("peer", "") if info else ""
+        total = info.get("total", 0) if info else 0
+        peer_str = f" tới '{peer}'" if peer else ""
+        bar = _render_bar(100.0)
+        size_str = _format_size(total)
+        self.print_fn(f"[FILE DONE] Đã gửi '{filename}'{peer_str}: [{bar}] 100% ({size_str})")
 
     def _on_complete_recv(self, session_id: str, filename: str, saved_path: str) -> None:
         with self._lock:
-            self._active_transfers.pop(session_id, None)
-            self._last_milestones.pop(session_id, None)
+            info = self._active_transfers.pop(session_id, None)
         self._trigger_update()
-        self.print_fn(f"[FILE DONE] Đã nhận và lưu '{filename}' tại: {saved_path}")
+        peer = info.get("peer", "") if info else ""
+        total = info.get("total", 0) if info else 0
+        peer_str = f" từ '{peer}'" if peer else ""
+        bar = _render_bar(100.0)
+        size_str = _format_size(total)
+        self.print_fn(
+            f"[FILE DONE] Đã nhận '{filename}'{peer_str}: [{bar}] 100% ({size_str}) -> {saved_path}"
+        )
 
     def _on_error(self, session_id: str, filename: str, err: str) -> None:
         with self._lock:
             self._active_transfers.pop(session_id, None)
-            self._last_milestones.pop(session_id, None)
         self._trigger_update()
         self.print_fn(f"[FILE ERROR] {filename}: {err}")

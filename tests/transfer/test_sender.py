@@ -277,6 +277,71 @@ class TestSender(unittest.TestCase):
         self.assertFalse(temp_part.exists())
         self.assertIsNone(manager.get_active_status())
 
+    def test_single_line_progress_bar_without_multiline_chat_spam(self) -> None:
+        """Verify Option A: multi-chunk transfer updates single-line status bar and prints only 1 final line."""
+        large_file = self.test_dir / "report.pdf"
+        large_file.write_bytes(b"X" * (256 * 1024))  # 256 KB = 4 chunks of 64 KB
+
+        alice_prints: list[str] = []
+        bob_prints: list[str] = []
+        alice_status_snapshots: list[str] = []
+        bob_status_snapshots: list[str] = []
+        clients: dict[str, ClientFileTransferManager] = {}
+
+        def send_network(source_user: str, message: dict) -> None:
+            target = "bob" if source_user == "alice" else "alice"
+            clients[target].handle_incoming(dict(message))
+
+        alice_manager = ClientFileTransferManager(
+            username="alice",
+            send_fn=lambda msg: send_network("alice", msg),
+            print_fn=alice_prints.append,
+            status_update_fn=lambda: (
+                alice_status_snapshots.append(s)
+                if (s := alice_manager.get_active_status()) is not None
+                else None
+            ),
+        )
+        bob_manager = ClientFileTransferManager(
+            username="bob",
+            send_fn=lambda msg: send_network("bob", msg),
+            print_fn=bob_prints.append,
+            status_update_fn=lambda: (
+                bob_status_snapshots.append(s)
+                if (s := bob_manager.get_active_status()) is not None
+                else None
+            ),
+        )
+        bob_manager.receiver.download_dir = self.test_dir / "downloads"
+        bob_manager.receiver.download_dir.mkdir(exist_ok=True)
+
+        clients["alice"] = alice_manager
+        clients["bob"] = bob_manager
+
+        alice_manager.send_file("bob", large_file)
+
+        start = time.time()
+        while time.time() - start < 3.0:
+            if alice_prints and bob_prints:
+                break
+            time.sleep(0.02)
+
+        # Exactly 1 line printed to chat log on sender and receiver (no 25%, 50%, 75% spam)
+        self.assertEqual(len(alice_prints), 1, f"Expected 1 print on sender, got: {alice_prints}")
+        self.assertEqual(len(bob_prints), 1, f"Expected 1 print on receiver, got: {bob_prints}")
+        self.assertIn("[FILE DONE]", alice_prints[0])
+        self.assertIn("100%", alice_prints[0])
+        self.assertIn("[FILE DONE]", bob_prints[0])
+        self.assertIn("100%", bob_prints[0])
+
+        # Live single-line toolbar snapshots were captured during chunk streaming (25%, 50%, 75%, etc.)
+        self.assertTrue(any("25.0%" in s or "50.0%" in s or "75.0%" in s for s in alice_status_snapshots))
+        self.assertTrue(any("25.0%" in s or "50.0%" in s or "75.0%" in s for s in bob_status_snapshots))
+
+        # Toolbar clears automatically after completion
+        self.assertIsNone(alice_manager.get_active_status())
+        self.assertIsNone(bob_manager.get_active_status())
+
 
 if __name__ == "__main__":
     unittest.main()

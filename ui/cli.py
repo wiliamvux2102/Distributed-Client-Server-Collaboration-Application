@@ -171,6 +171,7 @@ def main() -> None:
     configure_console_utf8()
     prompt_session = PromptSession()
     session: ClientSession | None = None
+    ft_manager: ClientFileTransferManager | None = None
 
     try:
         username = input("Username: ").strip()
@@ -192,12 +193,19 @@ def main() -> None:
             username=session.username,
             send_fn=session.send,
             print_fn=_print_async,
+            status_update_fn=prompt_session.app.invalidate,
         )
         ft_manager.register_handlers(session.register_handler)
 
         session.register_handler(mt.ONLINE_LIST, _handle_online_list)
         session.register_handler(mt.ERROR, _handle_server_error)
         session.register_handler(mt.BYE, _handle_bye)
+
+        def _build_prompt() -> str:
+            status = ft_manager.get_active_status()
+            if status:
+                return f"{status}\nBạn> "
+            return "Bạn> "
 
         # patch_stdout lets receiver-thread callbacks print above the active
         # prompt and lets PromptSession redraw the partially typed line.
@@ -208,7 +216,10 @@ def main() -> None:
 
             while not session.is_closed:
                 try:
-                    line = prompt_session.prompt("Bạn> ")
+                    line = prompt_session.prompt(
+                        _build_prompt,
+                        refresh_interval=0.05,
+                    )
                 except EOFError:
                     session.logout()
                     break
