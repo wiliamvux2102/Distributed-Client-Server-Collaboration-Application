@@ -18,7 +18,7 @@ TCP dùng frame độ dài cố định ở phần header, theo định dạng:
 - TLS handshake diễn ra trước message ứng dụng đầu tiên. Sau TLS handshake, `SERVER_READY` và các frame TCP đều được truyền trong TLS.
 - UDP discovery và heartbeat là JSON datagram riêng, không dùng framing TCP.
 
-*Lưu ý riêng cho truyền file (File Transfer):* Với bản tin `FILE_CHUNK`, cấu trúc frame mở rộng hỗ trợ Hybrid Framing gồm `[4 bytes Header Len][4 bytes Binary Payload Len][JSON Header][Raw Binary Payload]` để truyền dữ liệu nhị phân tốc độ cao không bị phình dung lượng do Base64.
+*Lưu ý riêng cho truyền file (File Transfer):* Các bản tin điều khiển (`FILE_INIT`, `FILE_ACCEPT`, `FILE_END`, `FILE_RESULT`, `FILE_ERROR`) và dữ liệu (`FILE_CHUNK`) đều đi qua cơ chế Length-Prefixed JSON Framing `[4 bytes Length][UTF-8 JSON]` dùng chung của `common/protocol.py` (kèm `send_lock` để tránh xen byte với tin nhắn chat). Với `FILE_CHUNK`, mảnh dữ liệu nhị phân (`64 KB`/chunk) được đóng gói an toàn trong trường `"binary_payload_base64"` và giải mã về raw `bytes` ngay tại tầng adapter của `transfer/`.
 
 ## Các message TCP hiện có
 

@@ -2,11 +2,11 @@
 
 ## Phạm vi hiện tại
 
-Ứng dụng tách kết nối mạng, xử lý chat và giao diện thành các module riêng. Server cung cấp đăng nhập, danh sách online, chat riêng và chat chung. Client dùng một session TCP/TLS duy nhất; một luồng nền đọc TCP rồi chuyển bản tin đến callback theo `type`. Truyền file chưa được tích hợp.
+Ứng dụng tách kết nối mạng, xử lý chat, truyền file và giao diện thành các module riêng. Server cung cấp đăng nhập, danh sách online, chat riêng, chat chung và định tuyến phiên truyền file (Cut-Through Streaming Relay). Client dùng một session TCP/TLS duy nhất; một luồng nền đọc TCP rồi chuyển bản tin đến callback theo `type`.
 
 ## Thành phần
 
-- **CLI (`ui/cli.py`)** đọc lệnh, hiển thị tin đến, danh sách online và trạng thái gửi. CLI không tự đóng frame TCP.
+- **CLI (`ui/cli.py`)** đọc lệnh, hiển thị tin đến, danh sách online, trạng thái gửi và thanh tiến trình truyền file thời gian thực ngay trên dòng nhập lệnh. CLI không tự đóng frame TCP.
 - **Chat client (`chat/client_chat.py`)** tạo `DIRECT_MESSAGE`/`BROADCAST_MESSAGE`, kiểm tra nội dung trước khi gửi, và chuyển phản hồi chat đến callback giao diện.
 - **Client session (`infrastructure/client_connection.py`)** dò server qua UDP, thiết lập TCP/TLS, đăng nhập, gửi bản tin có khóa, nhận bản tin ở một luồng duy nhất và gửi heartbeat UDP.
 - **TCP listener và worker (`infrastructure/server.py`)** nhận kết nối đa client, hoàn tất TLS, xác thực LOGIN và dispatch request của session đã đăng nhập.
@@ -15,7 +15,7 @@
 - **UserRegistry (`infrastructure/user_registry.py`)** lưu username, socket, địa chỉ, heartbeat token và send lock cho mỗi session online.
 - **Common utilities (`common/`)** cung cấp protocol framing JSON 4 byte và cấu hình console UTF-8 cho server/CLI.
 - **TLS (`infrastructure/security.py`)** dùng TLS 1.2 trở lên. Client xác minh CA và tên server `collab-server.local`.
-- **Transfer (`transfer/`)** hiện chưa có implementation; TV3 sẽ cung cấp module và sự kiện để CLI tích hợp.
+- **Transfer (`transfer/`)** gồm `sender.py` (chia chunk 64 KB, luồng gửi nền, quản lý tiến trình CLI), `receiver.py` (nhận chunk vào file tạm `.part`, chống Path Traversal, đổi tên nguyên tử), `server_handler.py` (quản lý phiên truyền file và chuyển tiếp streaming qua server) và `integrity.py` (kiểm tra kích thước và băm SHA-256).
 
 ## Sơ đồ thành phần
 
@@ -150,8 +150,53 @@ stateDiagram-v2
     Disconnected --> [*]
 ```
 
+## Luồng truyền file (File Transfer)
+
+1. CLI nhận lệnh `/sendfile <username> <filepath>` và gọi `ClientFileTransferManager.send_file()`.
+2. `FileSender` trích xuất metadata (`filename`, `filesize`, `sha256`, `chunk_size=65536`, `total_chunks`), sinh `session_id` (UUID) và gửi `FILE_INIT`.
+3. `FileTransferServerHandler` xác thực người gửi từ `context.username`, kiểm tra người nhận đang online, lưu phiên vào `_active_sessions` và chuyển tiếp `FILE_INIT` tới người nhận.
+4. `FileReceiver` bên nhận tạo file tạm `.{session_id}_{safe_filename}.part` trong thư mục `downloads/` và phản hồi `FILE_ACCEPT` (nếu file rỗng `0 byte` thì hoàn tất ngay).
+5. Khi nhận `FILE_ACCEPT`, `FileSender` khởi chạy luồng nền `_send_chunks_worker` đọc tuần tự từng chunk `64 KB`, gửi `FILE_CHUNK` qua kết nối có khóa và kết thúc bằng `FILE_END`. Thanh tiến trình `[=====>---------] %` được cập nhật trực tiếp theo thời gian thực trên dòng prompt của cả hai đầu.
+6. Khi nhận `FILE_END`, `FileReceiver` đóng file `.part`, gọi `verify_file()` kiểm tra đúng kích thước và mã băm SHA-256. Nếu khớp, đổi tên nguyên tử (`os.replace`) sang tên file chính thức (tự thêm `(1)`, `(2)` nếu trùng) và gửi `FILE_RESULT (status="OK")`. Nếu sai lệch hoặc đứt kết nối giữa chừng, xóa ngay file `.part` và báo lỗi.
+
+## Sequence diagram truyền file
+
+```mermaid
+sequenceDiagram
+    participant Sender as Client gửi (FileSender)
+    participant Server as Server (FileTransferServerHandler)
+    participant Receiver as Client nhận (FileReceiver)
+
+    Sender->>Sender: Tính SHA-256 & tạo session_id
+    Sender->>Server: FILE_INIT (session_id, filename, filesize, sha256, total_chunks)
+    alt Người nhận offline
+        Server-->>Sender: FILE_ERROR (ERR_USER_OFFLINE)
+    else Người nhận online
+        Server->>Receiver: Chuyển tiếp FILE_INIT
+        Receiver->>Receiver: Tạo file tạm .<session_id>_<name>.part
+        Receiver->>Server: FILE_ACCEPT (session_id)
+        Server->>Sender: Chuyển tiếp FILE_ACCEPT
+        loop Từng chunk_index từ 0 đến total_chunks - 1
+            Sender->>Server: FILE_CHUNK (session_id, chunk_index, data)
+            Server->>Receiver: Chuyển tiếp FILE_CHUNK
+            Receiver->>Receiver: Kiểm tra thứ tự chunk & ghi vào file .part
+        end
+        Sender->>Server: FILE_END (session_id)
+        Server->>Receiver: Chuyển tiếp FILE_END
+        Receiver->>Receiver: Kiểm tra filesize & SHA-256
+        alt Toàn vẹn hợp lệ
+            Receiver->>Receiver: os.replace(.part -> downloads/<filename>)
+            Receiver->>Server: FILE_RESULT (status="OK")
+            Server->>Sender: Chuyển tiếp FILE_RESULT (OK)
+        else Lỗi toàn vẹn / sai hash
+            Receiver->>Receiver: Xóa file .part
+            Receiver->>Server: FILE_RESULT (status="FAILED", reason)
+            Server->>Sender: Chuyển tiếp FILE_RESULT (FAILED)
+        end
+    end
+```
+
 ## Giới hạn hiện tại
 
-- File transfer chưa được tích hợp; sequence truyền file sẽ bổ sung sau khi TV3 bàn giao module và protocol.
-- `DELIVERY_STATUS.ok` xác nhận server gửi được frame tới socket đích; nó không xác nhận client đã hiển thị hoặc người dùng đã đọc tin.
-- TLS bảo vệ TCP. UDP discovery/heartbeat không được TLS bảo vệ; heartbeat token hiện nằm trong datagram UDP plaintext.
+- `DELIVERY_STATUS.ok` đối với tin nhắn chat xác nhận server gửi được frame tới socket đích; với truyền file, `FILE_RESULT (OK)` xác nhận đầu nhận đã lưu và kiểm tra SHA-256 thành công.
+- TLS bảo vệ toàn bộ kết nối TCP (bao gồm đăng nhập, chat và truyền file). UDP discovery/heartbeat không được TLS bảo vệ; heartbeat token hiện nằm trong datagram UDP plaintext.

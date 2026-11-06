@@ -1,11 +1,10 @@
 # Distributed Client Server Collaboration Application
 
-Ứng dụng Python cho phép các client trong cùng mạng đăng nhập qua server, xem người dùng online, gửi tin riêng và chat chung. Server định tuyến tin nhắn qua TCP/TLS; UDP được dùng để tìm server và duy trì heartbeat.
+Ứng dụng Python cho phép các client trong cùng mạng đăng nhập qua server, xem người dùng online, gửi tin riêng, chat chung và truyền file tin cậy. Server định tuyến tin nhắn và luồng chunk file qua TCP/TLS; UDP được dùng để tìm server và duy trì heartbeat.
 
 ## Trạng thái chức năng
 
-- Đã có: UDP discovery/heartbeat, TCP framing bằng JSON, TLS, đăng nhập, danh sách online, chat riêng, chat chung và CLI.
-- Chưa tích hợp: truyền file. Các file trong `transfer/` hiện là placeholder; chờ TV3 bàn giao API trước khi hướng dẫn lệnh truyền file.
+- Đã hoàn thiện và tích hợp đầy đủ: UDP discovery/heartbeat, TCP framing bằng JSON, TLS, đăng nhập, danh sách online, chat riêng, chat chung, truyền file trọn luồng (`transfer/`) với kiểm tra toàn vẹn SHA-256 và giao diện CLI hiển thị thanh tiến trình thời gian thực.
 
 ## Yêu cầu
 
@@ -91,18 +90,24 @@ Trên macOS/Linux dùng `python3 -m ui.cli`. Mỗi client cần một username d
 Có thể nhập văn bản thường để gửi chat chung. Tin đến được nhận ở luồng nền khi CLI đang chờ nhập.
 Server và CLI tự cấu hình console UTF-8 để hiển thị tiếng Việt trên Windows.
 
+### Hướng dẫn truyền file (`/sendfile`)
+
+- Cú pháp: `/sendfile <username> <đường_dẫn_file>` (hỗ trợ cả đường dẫn có khoảng trắng hoặc bọc trong dấu ngoặc kép `"..."`).
+- Trong lúc truyền, thanh tiến trình `[=====>---------] %` hiển thị trực tiếp theo thời gian thực ngay trên dòng nhập lệnh `Bạn> ` ở cả máy gửi và máy nhận mà không làm trôi lịch sử chat.
+- File nhận được ghi tạm vào `downloads/.<session_id>_<filename>.part`, kiểm tra kích thước và mã băm **SHA-256** trước khi đổi tên thành file hoàn chỉnh trong thư mục `downloads/` (tự động đánh số `file (1).ext` nếu trùng tên). Nếu mất kết nối hoặc sai mã băm, file `.part` sẽ tự động được dọn sạch.
+
 ## Cấu trúc liên quan
 
 - `common/`: frame TCP, tên các loại bản tin và cấu hình console.
 - `infrastructure/`: server, kết nối client, TLS, UDP và session.
 - `chat/`: handler chat phía server và logic chat phía client.
-- `ui/cli.py`: lệnh và hiển thị CLI.
-- `transfer/`: module truyền file, chưa tích hợp.
+- `ui/cli.py`: lệnh, hiển thị CLI và thanh tiến trình truyền file thời gian thực.
+- `transfer/`: module truyền file trọn luồng (`sender.py`, `receiver.py`, `server_handler.py`, `integrity.py`).
 - `docs/protocol.md`: đặc tả bản tin và framing.
-- `docs/architecture.md`: thành phần và luồng xử lý.
+- `docs/architecture.md`: thành phần, sequence diagram chat/truyền file và luồng xử lý.
 - `docs/chat_integration_contract.md`: ranh giới tích hợp TV1/TV2/TV3.
-- `docs/test_results.md`: kết quả được ghi nhận và giới hạn kiểm thử.
+- `docs/test_results.md`: kết quả kiểm thử hạ tầng, chat và truyền file.
 
 ## Tài liệu báo cáo
 
-Báo cáo PDF cuối cần tổng hợp kiến trúc, đặc tả protocol, sequence diagram chat/truyền file và các vấn đề gặp phải. Phần truyền file cần cập nhật sau khi TV3 hoàn tất module và nhóm kiểm thử tích hợp.
+Báo cáo PDF cuối tổng hợp kiến trúc, đặc tả protocol, sequence diagram chat/truyền file và các vấn đề kỹ thuật đã giải quyết.
