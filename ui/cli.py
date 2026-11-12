@@ -169,7 +169,7 @@ def main() -> None:
     """Connect, log in, start callbacks, and run the CLI input loop."""
 
     configure_console_utf8()
-    prompt_session = PromptSession()
+    prompt_session = PromptSession(erase_when_done=True)
     session: ClientSession | None = None
     ft_manager: ClientFileTransferManager | None = None
 
