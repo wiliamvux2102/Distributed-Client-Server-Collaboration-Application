@@ -175,11 +175,23 @@ def main() -> None:
 
     try:
         username = input("Username: ").strip()
-        session = ClientSession.connect(
-            username,
-            on_error=_print_async,
-            on_unhandled=_handle_unhandled,
-        )
+        try:
+            session = ClientSession.connect(
+                username,
+                on_error=_print_async,
+                on_unhandled=_handle_unhandled,
+            )
+        except TimeoutError:
+            print("[CẢNH BÁO] Không tìm thấy server tự động qua UDP broadcast (có thể do Wi-Fi/4G chặn broadcast).")
+            manual_host = input("Nhập IPv4 của máy chủ server (hoặc Enter để hủy): ").strip()
+            if not manual_host:
+                raise
+            session = ClientSession.connect(
+                username,
+                on_error=_print_async,
+                on_unhandled=_handle_unhandled,
+                server_host=manual_host,
+            )
 
         on_message, on_status = _make_chat_callbacks()
         chat = ClientChat(

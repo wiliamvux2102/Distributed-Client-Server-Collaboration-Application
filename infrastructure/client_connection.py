@@ -2,6 +2,8 @@ import socket
 import threading
 import json
 import ssl
+import sys
+import time
 import logging
 from collections.abc import Callable
 from common.protocol import recv_message, send_message
@@ -43,6 +45,29 @@ def _report_error_safely(handler: ErrorHandler, message: str) -> None:
         )
 
 
+def _disable_udp_connreset(sock: socket.socket) -> None:
+    """Trên Windows, vô hiệu hóa WSAECONNRESET khi nhận ICMP Port Unreachable."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            SIO_UDP_CONNRESET = 0x9800000C
+            val = ctypes.c_ulong(0)
+            cb = ctypes.c_ulong(0)
+            ctypes.windll.ws2_32.WSAIoctl(
+                sock.fileno(),
+                SIO_UDP_CONNRESET,
+                ctypes.byref(val),
+                ctypes.sizeof(val),
+                None,
+                0,
+                ctypes.byref(cb),
+                None,
+                None,
+            )
+        except Exception:
+            pass
+
+
 def _get_discovery_targets() -> list[str]:
     """Lấy danh sách các địa chỉ đích broadcast tìm server trên tất cả card mạng."""
     targets = [DISCOVERY_TARGET]
@@ -71,12 +96,12 @@ def discover_server() -> tuple[str, int]:
     targets = _get_discovery_targets()
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+        _disable_udp_connreset(udp_socket)
         udp_socket.setsockopt(
             socket.SOL_SOCKET,
             socket.SO_BROADCAST,
             1,
         )
-        udp_socket.settimeout(DISCOVERY_TIMEOUT)
 
         for _ in range(DISCOVERY_ATTEMPTS):
             for target in targets:
@@ -88,34 +113,42 @@ def discover_server() -> tuple[str, int]:
                 except OSError:
                     continue
 
-            try:
-                datagram, server_address = udp_socket.recvfrom(
-                    MAX_DATAGRAM_SIZE
-                )
-            except socket.timeout:
-                continue
+            deadline = time.monotonic() + DISCOVERY_TIMEOUT
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                udp_socket.settimeout(max(0.05, remaining))
+                try:
+                    datagram, server_address = udp_socket.recvfrom(
+                        MAX_DATAGRAM_SIZE
+                    )
+                except socket.timeout:
+                    break
+                except (ConnectionResetError, OSError):
+                    continue
 
-            try:
-                response = json.loads(datagram.decode("utf-8"))
-            except (UnicodeError, json.JSONDecodeError):
-                continue
+                try:
+                    response = json.loads(datagram.decode("utf-8"))
+                except (UnicodeError, json.JSONDecodeError):
+                    continue
 
-            if not isinstance(response, dict):
-                continue
+                if not isinstance(response, dict):
+                    continue
 
-            if response.get("type") != mt.UDP_DISCOVERY_RESPONSE:
-                continue
+                if response.get("type") != mt.UDP_DISCOVERY_RESPONSE:
+                    continue
 
-            if response.get("protocol_version") != PROTOCOL_VERSION:
-                continue
+                if response.get("protocol_version") != PROTOCOL_VERSION:
+                    continue
 
-            tcp_port = response.get("tcp_port")
+                tcp_port = response.get("tcp_port")
 
-            if not isinstance(tcp_port, int) or not 1 <= tcp_port <= 65535:
-                continue
+                if not isinstance(tcp_port, int) or not 1 <= tcp_port <= 65535:
+                    continue
 
-            # IP server là IP nguồn của datagram phản hồi.
-            return server_address[0], tcp_port
+                # IP server là IP nguồn của datagram phản hồi.
+                return server_address[0], tcp_port
 
     raise TimeoutError("Không tìm thấy server qua UDP discovery.")
 
@@ -200,13 +233,21 @@ class ClientSession:
         username: str,
         on_error: ErrorHandler,
         on_unhandled: MessageHandler,
+        server_host: str | None = None,
+        server_port: int | None = None,
     ) -> "ClientSession":
         """Discover, connect with TLS, authenticate, and return a session."""
 
         if not isinstance(username, str) or not username.strip():
             raise ValueError("Username không được để trống.")
 
-        server_host, server_port = discover_server()
+        if server_host is None:
+            server_host, discovered_port = discover_server()
+            if server_port is None:
+                server_port = discovered_port
+        elif server_port is None:
+            server_port = SERVER_CONFIG["tcp_port"]
+
         connection = connect_tls(server_host, server_port)
 
         try:

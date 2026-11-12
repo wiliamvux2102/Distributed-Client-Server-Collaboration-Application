@@ -1,6 +1,7 @@
 # TV1: Xử lý UDP discovery, heartbeat và timeout.
 import json
 import socket
+import sys
 import threading
 from infrastructure.user_registry import user_registry
 from common import message_types as mt
@@ -18,6 +19,28 @@ PROTOCOL_VERSION = UDP_CONFIG["protocol_version"]
 UDP_WAIT_INTERVAL = UDP_CONFIG["wait_interval_seconds"]
 MAX_DATAGRAM_SIZE = 2048
 HEARTBEAT_TIMEOUT = HEARTBEAT_CONFIG["timeout_seconds"]
+
+def _disable_udp_connreset(sock: socket.socket) -> None:
+    """Trên Windows, vô hiệu hóa WSAECONNRESET khi nhận ICMP Port Unreachable."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            SIO_UDP_CONNRESET = 0x9800000C
+            val = ctypes.c_ulong(0)
+            cb = ctypes.c_ulong(0)
+            ctypes.windll.ws2_32.WSAIoctl(
+                sock.fileno(),
+                SIO_UDP_CONNRESET,
+                ctypes.byref(val),
+                ctypes.sizeof(val),
+                None,
+                0,
+                ctypes.byref(cb),
+                None,
+                None,
+            )
+        except Exception:
+            pass
 
 def disconnect_expired_sessions() -> None:
     expired_sessions = user_registry.remove_stale(HEARTBEAT_TIMEOUT)
@@ -40,6 +63,7 @@ def serve_discovery(stop_event: threading.Event) -> None:
     """Nghe yêu cầu discovery và heartbeat qua UDP."""
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+        _disable_udp_connreset(udp_socket)
         udp_socket.bind((UDP_BIND_HOST, UDP_DISCOVERY_PORT))
         udp_socket.settimeout(UDP_WAIT_INTERVAL)
 
@@ -56,7 +80,7 @@ def serve_discovery(stop_event: threading.Event) -> None:
                 datagram, client_address = udp_socket.recvfrom(
                     MAX_DATAGRAM_SIZE
                 )
-            except socket.timeout:
+            except (socket.timeout, ConnectionResetError, OSError):
                 continue
 
             try:
