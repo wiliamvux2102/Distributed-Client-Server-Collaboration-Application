@@ -43,6 +43,23 @@ def _report_error_safely(handler: ErrorHandler, message: str) -> None:
         )
 
 
+def _get_discovery_targets() -> list[str]:
+    """Lấy danh sách các địa chỉ đích broadcast tìm server trên tất cả card mạng."""
+    targets = [DISCOVERY_TARGET]
+    if DISCOVERY_TARGET == "255.255.255.255":
+        try:
+            _, _, ips = socket.gethostbyname_ex(socket.gethostname())
+            for ip in ips:
+                parts = ip.split(".")
+                if len(parts) == 4 and not parts[0].startswith("127"):
+                    directed = f"{parts[0]}.{parts[1]}.{parts[2]}.255"
+                    if directed not in targets:
+                        targets.append(directed)
+        except Exception:
+            pass
+    return targets
+
+
 def discover_server() -> tuple[str, int]:
     """Tìm server qua UDP broadcast và trả về (IP, TCP port)."""
 
@@ -51,6 +68,7 @@ def discover_server() -> tuple[str, int]:
         "protocol_version": PROTOCOL_VERSION,
     }
     request_bytes = json.dumps(request).encode("utf-8")
+    targets = _get_discovery_targets()
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
         udp_socket.setsockopt(
@@ -61,10 +79,14 @@ def discover_server() -> tuple[str, int]:
         udp_socket.settimeout(DISCOVERY_TIMEOUT)
 
         for _ in range(DISCOVERY_ATTEMPTS):
-            udp_socket.sendto(
-                request_bytes,
-                (DISCOVERY_TARGET, DISCOVERY_PORT),
-            )
+            for target in targets:
+                try:
+                    udp_socket.sendto(
+                        request_bytes,
+                        (target, DISCOVERY_PORT),
+                    )
+                except OSError:
+                    continue
 
             try:
                 datagram, server_address = udp_socket.recvfrom(
