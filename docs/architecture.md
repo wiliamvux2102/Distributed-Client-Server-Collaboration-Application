@@ -136,13 +136,17 @@ sequenceDiagram
 stateDiagram-v2
     [*] --> Discovering
     Discovering --> TcpConnecting: UDP discovery thành công
-    Discovering --> Disconnected: hết lần thử
+    Discovering --> FallbackManualIp: Discovery timeout (Wi-Fi chặn broadcast)
+    FallbackManualIp --> TcpConnecting: Nhập IP server thủ công
+    FallbackManualIp --> Disconnected: Hủy nhập IP
+    Discovering --> Disconnected: Hết lần thử và không nhập IP
     TcpConnecting --> TlsHandshake: TCP connect thành công
-    TcpConnecting --> Disconnected: lỗi connect
+    TcpConnecting --> Disconnected: Lỗi connect
     TlsHandshake --> WaitingLogin: TLS thành công
-    TlsHandshake --> Disconnected: lỗi TLS/chứng chỉ
+    TlsHandshake --> Disconnected: Lỗi TLS/chứng chỉ
     WaitingLogin --> Authenticated: LOGIN_OK
-    WaitingLogin --> Disconnected: LOGIN_ERROR hoặc timeout
+    WaitingLogin --> WaitingLogin: LOGIN_ERROR (cho phép thử lại với username khác)
+    WaitingLogin --> Disconnected: Timeout chờ đăng nhập hoặc đóng socket
     Authenticated --> Authenticated: LIST_ONLINE / DIRECT_MESSAGE / BROADCAST_MESSAGE
     Authenticated --> Closing: QUIT
     Authenticated --> Disconnected: TCP EOF/lỗi hoặc heartbeat stale
@@ -154,10 +158,11 @@ stateDiagram-v2
 
 1. CLI nhận lệnh `/sendfile <username> <filepath>` và gọi `ClientFileTransferManager.send_file()`.
 2. `FileSender` trích xuất metadata (`filename`, `filesize`, `sha256`, `chunk_size=65536`, `total_chunks`), sinh `session_id` (UUID) và gửi `FILE_INIT`.
-3. `FileTransferServerHandler` xác thực người gửi từ `context.username`, kiểm tra người nhận đang online, lưu phiên vào `_active_sessions` và chuyển tiếp `FILE_INIT` tới người nhận.
-4. `FileReceiver` bên nhận tạo file tạm `.{session_id}_{safe_filename}.part` trong thư mục `downloads/` và phản hồi `FILE_ACCEPT` (nếu file rỗng `0 byte` thì hoàn tất ngay).
-5. Khi nhận `FILE_ACCEPT`, `FileSender` khởi chạy luồng nền `_send_chunks_worker` đọc tuần tự từng chunk `64 KB`, gửi `FILE_CHUNK` qua kết nối có khóa và kết thúc bằng `FILE_END`. Thanh tiến trình `[=====>---------] %` được cập nhật trực tiếp theo thời gian thực trên dòng prompt của cả hai đầu.
-6. Khi nhận `FILE_END`, `FileReceiver` đóng file `.part`, gọi `verify_file()` kiểm tra đúng kích thước và mã băm SHA-256. Nếu khớp, đổi tên nguyên tử (`os.replace`) sang tên file chính thức (tự thêm `(1)`, `(2)` nếu trùng) và gửi `FILE_RESULT (status="OK")`. Nếu sai lệch hoặc đứt kết nối giữa chừng, xóa ngay file `.part` và báo lỗi.
+3. `FileTransferServerHandler` xác thực metadata (kiểm tra kiểu số `filesize`, chống Path Traversal ở `filename`, kiểm tra tính nhất quán chunks), kiểm tra chống trùng `session_id`, xác thực người gửi từ `context.username`, kiểm tra người nhận đang online, khởi tạo phiên với trạng thái `INIT` vào `_active_sessions` và chuyển tiếp `FILE_INIT` tới người nhận.
+4. `FileReceiver` bên nhận tạo file tạm `.{session_id}_{safe_filename}.part` trong thư mục `downloads/` (có cơ chế khóa file chống xóa nhầm khi chạy đa client) và phản hồi `FILE_ACCEPT` (nếu file rỗng `0 byte` thì hoàn tất ngay).
+5. Server kiểm tra vai trò người gửi (bắt buộc từ receiver) và chuyển trạng thái phiên từ `INIT` sang `ACCEPTED`. Khi nhận `FILE_ACCEPT`, `FileSender` khởi chạy luồng nền `_send_chunks_worker` đọc tuần tự từng chunk `64 KB`, gửi `FILE_CHUNK` (server chuyển trạng thái sang `TRANSFERRING`, từ chối chunk gửi từ receiver) qua kết nối có khóa và kết thúc bằng `FILE_END`. Thanh tiến trình `[=====>---------] %` được cập nhật trực tiếp theo thời gian thực trên dòng prompt của cả hai đầu.
+6. Khi nhận `FILE_END`, `FileReceiver` đóng file `.part`, gọi `verify_file()` kiểm tra đúng kích thước và mã băm SHA-256. Nếu khớp, đổi tên nguyên tử (`os.replace`) sang tên file chính thức (tự thêm `(1)`, `(2)` nếu trùng) và gửi `FILE_RESULT (status="OK")`. Nếu sai lệch hoặc đứt kết nối giữa chừng, xóa ngay file `.part` và báo lỗi. Server nhận `FILE_RESULT` chuyển phiên sang `COMPLETED` và giải phóng session khỏi `_active_sessions`.
+7. Các phiên truyền file bị treo hoặc không hoạt động quá 60 giây sẽ được `prune_stale_sessions()` tự động thu hồi và dọn dẹp định kỳ mỗi chu kỳ heartbeat.
 
 ## Sequence diagram truyền file
 

@@ -42,14 +42,16 @@ python -m scripts.simulate_clients --host 127.0.0.1 --clients 20
 
 Script tạo 20 client TLS đồng thời. Barrier giữ các session mở cho đến khi tất cả client đã đăng nhập và nhận phản hồi echo; sau đó mỗi client gửi QUIT và chờ BYE.
 
-## Kiểm thử Module Truyền File (`transfer/`) và Tích hợp Toàn hệ thống
+## Kiểm thử Toàn hệ thống (Infrastructure, Chat & File Transfer)
 
-- Bộ kiểm thử tự động (`python -m unittest discover -s tests -t . -v`): **54/54 bài test ĐẠT (OK)** gồm:
-  - `tests/transfer/test_integrity.py`: Tính SHA-256 theo chunk, trích xuất metadata file thường/file rỗng, phát hiện lệch kích thước và lệch mã băm SHA-256.
-  - `tests/transfer/test_sender.py`: Khởi tạo `FILE_INIT`, truyền chunk ở luồng nền sau `FILE_ACCEPT`, xử lý đường dẫn có dấu ngoặc kép/khoảng trắng, hủy truyền, hiển thị thanh tiến trình thời gian thực trên CLI và chốt 1 dòng kết quả `[FILE DONE]`.
-  - `tests/transfer/test_receiver.py`: Tạo file `.part`, chống Path Traversal (`../../`), kiểm tra thứ tự chunk, tự động đánh số `file (1).ext` khi trùng tên, xóa `.part` khi sai hash hoặc ngắt kết nối, quét dọn `.part` rác khi khởi động.
-  - `tests/transfer/test_server_handler.py`: Định tuyến `FILE_INIT`/`FILE_CHUNK`/`FILE_END`/`FILE_RESULT`, chặn tự gửi cho chính mình (`ERR_RECIPIENT_SELF`), báo lỗi khi người nhận offline (`ERR_USER_OFFLINE`), và tự động báo `ERR_PEER_DISCONNECTED` khi một phía rớt mạng đột ngột.
-  - `tests/transfer/test_transfer.py`: Kiểm thử End-to-End đủ 5 kịch bản bắt buộc (file rỗng 0B, file nhỏ 1 chunk, file lớn đa chunk, file nhị phân raw bytes `0..255`, lỗi sửa đổi dữ liệu trên đường truyền và ngắt kết nối đột ngột).
+- Bộ kiểm thử tự động (`python -m unittest discover -s tests -t . -v`): **79/79 bài test ĐẠT (OK)** gồm:
+  - `tests/infrastructure/test_server_infrastructure.py` (19 tests): Đăng ký user, danh sách online, từ chối login trùng (`USERNAME_TAKEN`), xác thực heartbeat token/IP, timeout dọn dẹp stale sessions; chuẩn hóa và kiểm tra username; đóng frame TCP 4-byte header, ghép mảnh TCP bị phân mẩu (`3-byte chunks`), bắt lỗi EOF/malformed JSON; định tuyến dispatcher.
+  - `tests/chat/test_chat_regressions.py` (5 tests): Chặn gửi tin nhắn cho chính mình, xử lý callback an toàn, từ chối ký tự Unicode lỗi, tích hợp CLI.
+  - `tests/transfer/test_integrity.py` (9 tests): Tính SHA-256 theo chunk, trích xuất metadata file thường/file rỗng, phát hiện lệch kích thước và lệch mã băm SHA-256.
+  - `tests/transfer/test_sender.py` (15 tests): Khởi tạo `FILE_INIT`, truyền chunk ở luồng nền sau `FILE_ACCEPT`, xử lý đường dẫn có dấu ngoặc kép/khoảng trắng, hủy truyền, hiển thị thanh tiến trình thời gian thực trên CLI và chốt 1 dòng kết quả `[FILE DONE]`.
+  - `tests/transfer/test_receiver.py` (10 tests): Tạo file `.part`, chống Path Traversal (`../../`), kiểm tra thứ tự chunk, tự động đánh số `file (1).ext` khi trùng tên, xóa `.part` khi sai hash hoặc ngắt kết nối, khóa file và quét dọn `.part` rác khi khởi động.
+  - `tests/transfer/test_server_handler.py` (15 tests): Định tuyến `FILE_INIT`/`FILE_CHUNK`/`FILE_END`/`FILE_RESULT`, kiểm tra metadata `FILE_INIT`, từ chối trùng `session_id`, bắt buộc vai trò người gửi và State Machine nghiêm ngặt, tự động dọn dẹp các phiên file bị treo (`prune_stale_sessions`), và tự động báo `ERR_PEER_DISCONNECTED` khi một phía rớt mạng đột ngột.
+  - `tests/transfer/test_transfer.py` (6 tests): Kiểm thử End-to-End đủ 5 kịch bản bắt buộc (file rỗng 0B, file nhỏ 1 chunk, file lớn đa chunk, file nhị phân raw bytes `0..255`, lỗi sửa đổi dữ liệu trên đường truyền và ngắt kết nối đột ngột).
 - Kiểm thử thực tế trên CLI và giữa 2 máy qua mạng LAN/4G: Truyền thành công file PDF nhỏ (`3.1 MB`) và file PDF lớn (`163.0 MB`), thanh tiến trình `[=====>---------] %` chạy mượt theo thời gian thực ngay trên dòng `Bạn> `.
 
 ## Còn cần kiểm thử trước khi bàn giao cuối
