@@ -156,11 +156,7 @@ def handle_broadcast_message(
 
 
 def register_chat_handlers(dispatcher: MessageDispatcher) -> None:
-    """Register TV2's chat handlers with the shared server dispatcher.
-
-    TV1 must remove its current DIRECT_MESSAGE registration before calling
-    this function; MessageDispatcher rejects duplicate registrations.
-    """
+    """Register chat handlers with the shared server dispatcher."""
 
     dispatcher.register(mt.DIRECT_MESSAGE, handle_direct_message)
     dispatcher.register(mt.BROADCAST_MESSAGE, handle_broadcast_message)

@@ -1,3 +1,4 @@
+import logging
 import socket
 import threading
 import secrets
@@ -230,6 +231,12 @@ def handle_client(
 
     except (OSError, ValueError) as error:
         print(f"[SERVER] {address}: lỗi xử lý: {error}")
+
+    except Exception as error:
+        logging.getLogger(__name__).exception(
+            f"[SERVER] {address}: lỗi không mong muốn trong handle_client: {error}"
+        )
+        print(f"[SERVER] {address}: lỗi bất ngờ: {error}")
 
     finally:
         if username is not None:
