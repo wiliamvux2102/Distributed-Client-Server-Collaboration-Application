@@ -1,69 +1,140 @@
-@startuml chat_sequence
-skinparam BoxPadding 10
-skinparam ParticipantPadding 10
-skinparam ResponseMessageBelowArrow true
-autonumber
+@startuml
+title SD-01 - Real-Time Direct and Broadcast Chat\nTrace: /msg & /all
 
-box "Client gửi (Alice)" #F0F8FF
-    actor Alice as "Alice"
-    participant UIA as "CLI"
-    participant ChatA as "ClientChat"
-    participant SessionA as "ClientSession"
-end box
+hide footbox
 
-box "Server" #FFF8DC
-    participant Worker as "Server Worker"
-    participant Dispatcher as "MessageDispatcher"
-    participant Handler as "ChatServerHandler"
-end box
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam dpi 160
+skinparam defaultFontName Arial
+skinparam defaultFontSize 13
 
-box "Client nhận (Bob)" #F0FFF0
-    participant SessionB as "ClientSession"
-    participant ChatB as "ClientChat"
-    participant UIB as "CLI"
-    actor Bob as "Bob"
-end box
+skinparam sequence {
+    ArrowColor #222222
+    ArrowThickness 1
+    LifeLineBorderColor #777777
+    LifeLineBackgroundColor white
+    ParticipantBorderColor #333333
+    ParticipantFontColor #111111
+    ParticipantBackgroundColor white
+    ActorBorderColor #333333
+    ActorFontColor #111111
+    ActorBackgroundColor white
+    ActivationBorderColor #555555
+    ActivationBackgroundColor #8FD3F4
+    GroupBorderColor #333333
+    GroupBackgroundColor white
+    GroupHeaderBackgroundColor white
+    GroupHeaderFontColor #111111
+    GroupFontColor #111111
+    MessageAlign center
+}
 
-alt Chat riêng (/msg bob <nội dung>)
-    Alice -> UIA : /msg bob Xin chào Bob!
-    UIA -> ChatA : send_direct("bob", "Xin chào Bob!")
-    ChatA -> SessionA : send(DIRECT_MESSAGE)
-    SessionA -> Worker : TCP/TLS Frame [Length + JSON]
-    Worker -> Dispatcher : dispatch(context, message)
-    Dispatcher -> Handler : handle_direct_message(context, message)
-    
-    alt Bob đang online
-        Handler -> SessionB : send_to_user(DIRECT_DELIVERY)
-        SessionB -> ChatB : callback(DIRECT_DELIVERY)
-        ChatB -> UIB : on_message("alice", "Xin chào Bob!", is_broadcast=False)
-        UIB --> Bob : [RIÊNG từ alice] Xin chào Bob!
-        Handler -> SessionA : DELIVERY_STATUS (ok=True)
-        SessionA -> ChatA : callback(DELIVERY_STATUS)
-        ChatA -> UIA : on_status(...)
-        UIA --> Alice : [ĐÃ GỬI] Đã chuyển tin tới bob.
-    else Bob offline
-        Handler -> SessionA : DELIVERY_STATUS (ok=False, code="RECIPIENT_OFFLINE")
-        SessionA -> ChatA : callback(DELIVERY_STATUS)
-        ChatA -> UIA : on_status(...)
-        UIA --> Alice : [LỖI RECIPIENT_OFFLINE] bob hiện không online.
+skinparam ParticipantPadding 20
+skinparam BoxPadding 8
+
+actor Alice as "Sender (Alice)" #C8F08C
+participant "senderUI : CLI" as SUI #F2D98B
+participant "senderChat : ClientChat" as SChat #AFC6E9
+participant "serverWorker : Server" as Server #AFC6E9
+participant "chatHandler : ChatServerHandler" as Handler #B8D99A
+participant "receiverChat : ClientChat" as RChat #AFC6E9
+participant "receiverUI : CLI" as RUI #F2D98B
+actor Bob as "Receiver (Bob)" #C8F08C
+
+alt Direct message (/msg bob <text>)
+
+    Alice -> SUI : /msg bob Hello Bob!
+    activate Alice #C792BE
+    activate SUI #8FD3F4
+
+    SUI -> SChat : send_direct("bob", "Hello Bob!")
+    activate SChat #8FD3F4
+
+    SChat -> Server : DIRECT_MESSAGE(recipient="bob", text)
+    activate Server #8FD3F4
+
+    Server -> Handler : dispatch(context, message)
+    activate Handler #8FD3F4
+
+    Handler -> Handler : validate recipient != sender\nvalidate UTF-8 & payload size
+
+    alt Recipient offline or invalid
+
+        Handler --> Server : DELIVERY_STATUS(ok=False, code)
+        Server --> SChat : relay DELIVERY_STATUS
+        SChat --> SUI : on_status(error)
+        SUI ->> Alice : display error
+
+        note over Server,Handler
+            Codes: RECIPIENT_OFFLINE,
+            RECIPIENT_SELF, MESSAGE_TOO_LARGE.
+        end note
+
+    else Recipient online
+
+        Handler -> RChat : send_to_user(DIRECT_DELIVERY)
+        activate RChat #8FD3F4
+        RChat -> RUI : on_message("alice", text, is_broadcast=False)
+        activate RUI #8FD3F4
+        RUI ->> Bob : display "[RIÊNG từ alice] Hello Bob!"
+        deactivate RUI
+        deactivate RChat
+
+        Handler --> Server : DELIVERY_STATUS(ok=True)
+        Server --> SChat : relay DELIVERY_STATUS
+        SChat --> SUI : on_status(delivered)
+        SUI ->> Alice : display "[ĐÃ GỬI] Đã chuyển tin tới bob."
+
     end
 
-else Chat chung (/all <nội dung>)
-    Alice -> UIA : /all Chào cả nhóm!
-    UIA -> ChatA : send_broadcast("Chào cả nhóm!")
-    ChatA -> SessionA : send(BROADCAST_MESSAGE)
-    SessionA -> Worker : TCP/TLS Frame
-    Worker -> Dispatcher : dispatch(context, message)
-    Dispatcher -> Handler : handle_broadcast_message(context, message)
-    loop Với mỗi user online != Alice
-        Handler -> SessionB : send_to_user(BROADCAST_DELIVERY)
-        SessionB -> ChatB : callback(BROADCAST_DELIVERY)
-        ChatB -> UIB : on_message("alice", "Chào cả nhóm!", is_broadcast=True)
-        UIB --> Bob : [CHUNG alice] Chào cả nhóm!
+    deactivate Handler
+    deactivate Server
+    deactivate SChat
+    deactivate SUI
+    deactivate Alice
+
+else Broadcast message (/all <text>)
+
+    Alice -> SUI : /all Hello everyone!
+    activate Alice #C792BE
+    activate SUI #8FD3F4
+
+    SUI -> SChat : send_broadcast("Hello everyone!")
+    activate SChat #8FD3F4
+
+    SChat -> Server : BROADCAST_MESSAGE(text)
+    activate Server #8FD3F4
+
+    Server -> Handler : dispatch(context, message)
+    activate Handler #8FD3F4
+
+    Handler -> Handler : validate UTF-8 & payload size\nquery online users
+
+    loop For each online user != Alice
+
+        Handler -> RChat : send_to_user(BROADCAST_DELIVERY)
+        activate RChat #8FD3F4
+        RChat -> RUI : on_message("alice", text, is_broadcast=True)
+        activate RUI #8FD3F4
+        RUI ->> Bob : display "[CHUNG alice] Hello everyone!"
+        deactivate RUI
+        deactivate RChat
+
     end
-    Handler -> SessionA : DELIVERY_STATUS (ok=True, delivered_count=N)
-    SessionA -> ChatA : callback(DELIVERY_STATUS)
-    ChatA -> UIA : on_status(...)
-    UIA --> Alice : [ĐÃ GỬI] Đã phát tin tới N người dùng đang online.
+
+    Handler --> Server : DELIVERY_STATUS(ok=True, delivered_count=N)
+    Server --> SChat : relay DELIVERY_STATUS
+    SChat --> SUI : on_status(delivered_count)
+    SUI ->> Alice : display "[ĐÃ GỬI] Đã phát tin tới N người dùng đang online."
+
+    deactivate Handler
+    deactivate Server
+    deactivate SChat
+    deactivate SUI
+    deactivate Alice
+
 end
+
 @enduml

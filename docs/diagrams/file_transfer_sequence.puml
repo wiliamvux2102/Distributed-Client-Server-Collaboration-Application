@@ -1,81 +1,150 @@
-@startuml file_transfer_sequence
-skinparam BoxPadding 10
-skinparam ParticipantPadding 10
-skinparam ResponseMessageBelowArrow true
-autonumber
+@startuml
+title SD-02 - Reliable File Transfer with SHA-256 Integrity\nTrace: /sendfile <receiver> <filepath>
 
-box "Client gửi (Alice)" #F0F8FF
-    actor Alice as "Người dùng (Alice)"
-    participant SenderCLI as "CLI / Prompt"
-    participant Sender as "FileSender"
-end box
+hide footbox
 
-box "Server" #FFF8DC
-    participant Server as "FileTransferServerHandler"
-end box
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam dpi 160
+skinparam defaultFontName Arial
+skinparam defaultFontSize 13
 
-box "Client nhận (Bob)" #F0FFF0
-    participant Receiver as "FileReceiver"
-    participant ReceiverCLI as "CLI / Prompt"
-    actor Bob as "Người dùng (Bob)"
-end box
+skinparam sequence {
+    ArrowColor #222222
+    ArrowThickness 1
+    LifeLineBorderColor #777777
+    LifeLineBackgroundColor white
+    ParticipantBorderColor #333333
+    ParticipantFontColor #111111
+    ParticipantBackgroundColor white
+    ActorBorderColor #333333
+    ActorFontColor #111111
+    ActorBackgroundColor white
+    ActivationBorderColor #555555
+    ActivationBackgroundColor #8FD3F4
+    GroupBorderColor #333333
+    GroupBackgroundColor white
+    GroupHeaderBackgroundColor white
+    GroupHeaderFontColor #111111
+    GroupFontColor #111111
+    MessageAlign center
+}
 
-Alice -> SenderCLI : /sendfile bob document.pdf
-activate SenderCLI
-SenderCLI -> Sender : start_transfer("bob", "document.pdf")
-activate Sender
-Sender -> Sender : Tính SHA-256, kích thước, tổng số chunk\nSinh session_id ngẫu nhiên
+skinparam ParticipantPadding 20
+skinparam BoxPadding 8
 
-Sender -> Server : FILE_INIT (session_id, filename, filesize, sha256, chunk_size, total_chunks)
-activate Server
-Server -> Server : Xác thực metadata (filesize, an toàn filename)\nKiểm tra chống trùng session_id\nKiểm tra Bob đang online\nLưu phiên (state = INIT)
+actor Alice as "Sender (Alice)" #C8F08C
+participant "senderUI : CLI" as SUI #F2D98B
+participant "fileSender : FileSender" as Sender #AFC6E9
+participant "serverHandler : FileTransferServerHandler" as Server #AFC6E9
+participant "fileReceiver : FileReceiver" as Receiver #B8D99A
+participant "receiverUI : CLI" as RUI #F2D98B
+actor Bob as "Receiver (Bob)" #C8F08C
 
-alt Người nhận offline hoặc metadata không hợp lệ
-    Server --> Sender : FILE_ERROR (ERR_USER_OFFLINE / ERR_INVALID_METADATA)
-    Sender --> SenderCLI : Báo lỗi cho người dùng
-else Người nhận online
-    Server -> Receiver : Chuyển tiếp FILE_INIT
-    activate Receiver
-    Receiver -> Receiver : Tạo file tạm .<session_id>_<name>.part\nKhóa file (file lock)
-    Receiver --> ReceiverCLI : [FILE] Nhận <- alice: document.pdf
-    Receiver -> Server : FILE_ACCEPT (session_id)
-    Server -> Server : Kiểm tra vai trò (phải từ receiver)\nChuyển state: INIT -> ACCEPTED
-    Server -> Sender : Chuyển tiếp FILE_ACCEPT
+Alice -> SUI : /sendfile bob document.pdf
+activate Alice #C792BE
+activate SUI #8FD3F4
 
-    Sender -> Sender : Khởi chạy luồng gửi nền (Thread)
-    loop Từng chunk từ 0 đến total_chunks - 1
-        Sender -> Sender : Đọc 64 KB từ file
-        Sender -> Server : FILE_CHUNK (session_id, chunk_index, binary_payload)
-        Server -> Server : Kiểm tra vai trò & state\nChuyển state: TRANSFERRING
-        Server -> Receiver : Chuyển tiếp FILE_CHUNK
-        Receiver -> Receiver : Kiểm tra đúng thứ tự chunk_index\nGhi chunk vào file .part
-        Receiver --> ReceiverCLI : Cập nhật thanh tiến trình %
-        Sender --> SenderCLI : Cập nhật thanh tiến trình %
+SUI -> Sender : start_transfer("bob", "document.pdf")
+activate Sender #8FD3F4
+
+Sender -> Sender : compute SHA-256, filesize, total_chunks\ngenerate session_id
+
+Sender -> Server : FILE_INIT(session_id, filename, filesize, sha256, chunk_size, total_chunks)
+activate Server #8FD3F4
+
+Server -> Server : validate metadata & check duplicate session_id\nverify recipient online
+
+alt Invalid metadata, duplicate session_id, or recipient offline
+
+    Server --> Sender : FILE_ERROR(code, reason)
+    Sender --> SUI : report transfer error
+    SUI ->> Alice : display error
+
+    note over Sender,Server
+        Session is not created or retained.
+        Codes: ERR_INVALID_METADATA,
+        ERR_DUPLICATE_SESSION, ERR_USER_OFFLINE.
+    end note
+
+else Recipient online and metadata valid
+
+    Server -> Receiver : relay FILE_INIT
+    activate Receiver #8FD3F4
+
+    Receiver -> Receiver : sanitize filename & create .<session_id>_<name>.part\nacquire file lock
+
+    Receiver --> RUI : notify incoming transfer
+    activate RUI #8FD3F4
+    RUI ->> Bob : display "[FILE] Nhận <- alice: document.pdf"
+    deactivate RUI
+
+    Receiver -> Server : FILE_ACCEPT(session_id)
+    Server -> Server : verify role == receiver & state == INIT\ntransition state: INIT -> ACCEPTED
+    Server --> Sender : relay FILE_ACCEPT(session_id)
+
+    loop For each chunk_index in 0 .. total_chunks - 1
+
+        Sender -> Server : FILE_CHUNK(session_id, chunk_index, payload_b64)
+        Server -> Server : verify role == sender & decode base64\ntransition state -> TRANSFERRING
+        Server -> Receiver : relay FILE_CHUNK(session_id, chunk_index, payload)
+        Receiver -> Receiver : verify sequence & write to .part
+        Sender --> SUI : update progress bar (%)
+        Receiver --> RUI : update progress bar (%)
+
     end
 
-    Sender -> Server : FILE_END (session_id)
-    Server -> Server : Kiểm tra vai trò & state -> WAITING_RESULT
-    Server -> Receiver : Chuyển tiếp FILE_END
+    Sender -> Server : FILE_END(session_id)
+    Server -> Server : verify role == sender\ntransition state -> WAITING_RESULT
+    Server -> Receiver : relay FILE_END(session_id)
 
-    Receiver -> Receiver : Đóng file .part\nKiểm tra filesize & băm SHA-256
+    Receiver -> Receiver : close .part & verify filesize + SHA-256
 
-    alt Toàn vẹn hợp lệ (SHA-256 khớp)
-        Receiver -> Receiver : Đổi tên nguyên tử (os.replace):\n.part -> downloads/document.pdf
-        Receiver -> Server : FILE_RESULT (session_id, status="OK")
-        Server -> Server : Chuyển state: COMPLETED\nXóa session khỏi _active_sessions
-        Server -> Sender : Chuyển tiếp FILE_RESULT (OK)
-        Sender --> SenderCLI : [FILE DONE] Đã gửi 'document.pdf' tới 'bob': 100%
-        Receiver --> ReceiverCLI : [FILE DONE] Đã nhận 'document.pdf' từ 'alice': 100%
-    else Sai lệch kích thước hoặc mã băm SHA-256
-        Receiver -> Receiver : Xóa ngay file .part bị hỏng
-        Receiver -> Server : FILE_RESULT (session_id, status="FAILED", reason)
-        Server -> Sender : Chuyển tiếp FILE_RESULT (FAILED)
-        Sender --> SenderCLI : [LỖI] Truyền file thất bại: sai mã băm SHA-256
-        Receiver --> ReceiverCLI : [LỖI] File hỏng: xóa file tạm
+    alt Size & SHA-256 match
+
+        Receiver -> Receiver : atomic rename (os.replace)\n.part -> downloads/document.pdf
+        Receiver -> Server : FILE_RESULT(session_id, status="OK")
+        Server -> Server : state = COMPLETED & remove session
+        Server --> Sender : relay FILE_RESULT(OK)
+
+        Sender --> SUI : transfer completed
+        SUI ->> Alice : display "[FILE DONE] 100%"
+
+        Receiver --> RUI : download completed
+        activate RUI #8FD3F4
+        RUI ->> Bob : display "[FILE DONE] 100% -> downloads/document.pdf"
+        deactivate RUI
+
+        note over Server,Receiver
+            File integrity verified via SHA-256.
+            Session removed from _active_sessions.
+        end note
+
+    else Integrity check failed (size or hash mismatch)
+
+        Receiver -> Receiver : delete corrupted .part file
+        Receiver -> Server : FILE_RESULT(session_id, status="FAILED", reason)
+        Server -> Server : state = FAILED & remove session
+        Server --> Sender : relay FILE_RESULT(FAILED)
+
+        Sender --> SUI : transfer failed
+        SUI ->> Alice : display error
+
+        Receiver --> RUI : integrity check failed
+        activate RUI #8FD3F4
+        RUI ->> Bob : display error
+        deactivate RUI
+
     end
+
     deactivate Receiver
+
 end
+
 deactivate Server
 deactivate Sender
-deactivate SenderCLI
+deactivate SUI
+deactivate Alice
+
 @enduml
