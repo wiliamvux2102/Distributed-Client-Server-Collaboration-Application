@@ -1,0 +1,81 @@
+@startuml file_transfer_sequence
+skinparam BoxPadding 10
+skinparam ParticipantPadding 10
+skinparam ResponseMessageBelowArrow true
+autonumber
+
+box "Client gửi (Alice)" #F0F8FF
+    actor Alice as "Người dùng (Alice)"
+    participant SenderCLI as "CLI / Prompt"
+    participant Sender as "FileSender"
+end box
+
+box "Server" #FFF8DC
+    participant Server as "FileTransferServerHandler"
+end box
+
+box "Client nhận (Bob)" #F0FFF0
+    participant Receiver as "FileReceiver"
+    participant ReceiverCLI as "CLI / Prompt"
+    actor Bob as "Người dùng (Bob)"
+end box
+
+Alice -> SenderCLI : /sendfile bob document.pdf
+activate SenderCLI
+SenderCLI -> Sender : start_transfer("bob", "document.pdf")
+activate Sender
+Sender -> Sender : Tính SHA-256, kích thước, tổng số chunk\nSinh session_id ngẫu nhiên
+
+Sender -> Server : FILE_INIT (session_id, filename, filesize, sha256, chunk_size, total_chunks)
+activate Server
+Server -> Server : Xác thực metadata (filesize, an toàn filename)\nKiểm tra chống trùng session_id\nKiểm tra Bob đang online\nLưu phiên (state = INIT)
+
+alt Người nhận offline hoặc metadata không hợp lệ
+    Server --> Sender : FILE_ERROR (ERR_USER_OFFLINE / ERR_INVALID_METADATA)
+    Sender --> SenderCLI : Báo lỗi cho người dùng
+else Người nhận online
+    Server -> Receiver : Chuyển tiếp FILE_INIT
+    activate Receiver
+    Receiver -> Receiver : Tạo file tạm .<session_id>_<name>.part\nKhóa file (file lock)
+    Receiver --> ReceiverCLI : [FILE] Nhận <- alice: document.pdf
+    Receiver -> Server : FILE_ACCEPT (session_id)
+    Server -> Server : Kiểm tra vai trò (phải từ receiver)\nChuyển state: INIT -> ACCEPTED
+    Server -> Sender : Chuyển tiếp FILE_ACCEPT
+
+    Sender -> Sender : Khởi chạy luồng gửi nền (Thread)
+    loop Từng chunk từ 0 đến total_chunks - 1
+        Sender -> Sender : Đọc 64 KB từ file
+        Sender -> Server : FILE_CHUNK (session_id, chunk_index, binary_payload)
+        Server -> Server : Kiểm tra vai trò & state\nChuyển state: TRANSFERRING
+        Server -> Receiver : Chuyển tiếp FILE_CHUNK
+        Receiver -> Receiver : Kiểm tra đúng thứ tự chunk_index\nGhi chunk vào file .part
+        Receiver --> ReceiverCLI : Cập nhật thanh tiến trình %
+        Sender --> SenderCLI : Cập nhật thanh tiến trình %
+    end
+
+    Sender -> Server : FILE_END (session_id)
+    Server -> Server : Kiểm tra vai trò & state -> WAITING_RESULT
+    Server -> Receiver : Chuyển tiếp FILE_END
+
+    Receiver -> Receiver : Đóng file .part\nKiểm tra filesize & băm SHA-256
+
+    alt Toàn vẹn hợp lệ (SHA-256 khớp)
+        Receiver -> Receiver : Đổi tên nguyên tử (os.replace):\n.part -> downloads/document.pdf
+        Receiver -> Server : FILE_RESULT (session_id, status="OK")
+        Server -> Server : Chuyển state: COMPLETED\nXóa session khỏi _active_sessions
+        Server -> Sender : Chuyển tiếp FILE_RESULT (OK)
+        Sender --> SenderCLI : [FILE DONE] Đã gửi 'document.pdf' tới 'bob': 100%
+        Receiver --> ReceiverCLI : [FILE DONE] Đã nhận 'document.pdf' từ 'alice': 100%
+    else Sai lệch kích thước hoặc mã băm SHA-256
+        Receiver -> Receiver : Xóa ngay file .part bị hỏng
+        Receiver -> Server : FILE_RESULT (session_id, status="FAILED", reason)
+        Server -> Sender : Chuyển tiếp FILE_RESULT (FAILED)
+        Sender --> SenderCLI : [LỖI] Truyền file thất bại: sai mã băm SHA-256
+        Receiver --> ReceiverCLI : [LỖI] File hỏng: xóa file tạm
+    end
+    deactivate Receiver
+end
+deactivate Server
+deactivate Sender
+deactivate SenderCLI
+@enduml

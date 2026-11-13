@@ -1,0 +1,69 @@
+@startuml chat_sequence
+skinparam BoxPadding 10
+skinparam ParticipantPadding 10
+skinparam ResponseMessageBelowArrow true
+autonumber
+
+box "Client gửi (Alice)" #F0F8FF
+    actor Alice as "Alice"
+    participant UIA as "CLI"
+    participant ChatA as "ClientChat"
+    participant SessionA as "ClientSession"
+end box
+
+box "Server" #FFF8DC
+    participant Worker as "Server Worker"
+    participant Dispatcher as "MessageDispatcher"
+    participant Handler as "ChatServerHandler"
+end box
+
+box "Client nhận (Bob)" #F0FFF0
+    participant SessionB as "ClientSession"
+    participant ChatB as "ClientChat"
+    participant UIB as "CLI"
+    actor Bob as "Bob"
+end box
+
+alt Chat riêng (/msg bob <nội dung>)
+    Alice -> UIA : /msg bob Xin chào Bob!
+    UIA -> ChatA : send_direct("bob", "Xin chào Bob!")
+    ChatA -> SessionA : send(DIRECT_MESSAGE)
+    SessionA -> Worker : TCP/TLS Frame [Length + JSON]
+    Worker -> Dispatcher : dispatch(context, message)
+    Dispatcher -> Handler : handle_direct_message(context, message)
+    
+    alt Bob đang online
+        Handler -> SessionB : send_to_user(DIRECT_DELIVERY)
+        SessionB -> ChatB : callback(DIRECT_DELIVERY)
+        ChatB -> UIB : on_message("alice", "Xin chào Bob!", is_broadcast=False)
+        UIB --> Bob : [RIÊNG từ alice] Xin chào Bob!
+        Handler -> SessionA : DELIVERY_STATUS (ok=True)
+        SessionA -> ChatA : callback(DELIVERY_STATUS)
+        ChatA -> UIA : on_status(...)
+        UIA --> Alice : [ĐÃ GỬI] Đã chuyển tin tới bob.
+    else Bob offline
+        Handler -> SessionA : DELIVERY_STATUS (ok=False, code="RECIPIENT_OFFLINE")
+        SessionA -> ChatA : callback(DELIVERY_STATUS)
+        ChatA -> UIA : on_status(...)
+        UIA --> Alice : [LỖI RECIPIENT_OFFLINE] bob hiện không online.
+    end
+
+else Chat chung (/all <nội dung>)
+    Alice -> UIA : /all Chào cả nhóm!
+    UIA -> ChatA : send_broadcast("Chào cả nhóm!")
+    ChatA -> SessionA : send(BROADCAST_MESSAGE)
+    SessionA -> Worker : TCP/TLS Frame
+    Worker -> Dispatcher : dispatch(context, message)
+    Dispatcher -> Handler : handle_broadcast_message(context, message)
+    loop Với mỗi user online != Alice
+        Handler -> SessionB : send_to_user(BROADCAST_DELIVERY)
+        SessionB -> ChatB : callback(BROADCAST_DELIVERY)
+        ChatB -> UIB : on_message("alice", "Chào cả nhóm!", is_broadcast=True)
+        UIB --> Bob : [CHUNG alice] Chào cả nhóm!
+    end
+    Handler -> SessionA : DELIVERY_STATUS (ok=True, delivered_count=N)
+    SessionA -> ChatA : callback(DELIVERY_STATUS)
+    ChatA -> UIA : on_status(...)
+    UIA --> Alice : [ĐÃ GỬI] Đã phát tin tới N người dùng đang online.
+end
+@enduml

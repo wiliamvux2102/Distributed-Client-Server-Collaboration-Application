@@ -61,7 +61,7 @@ Trước khi chạy server, kiểm tra rằng đường dẫn `tls.server_privat
 Mở một terminal ở thư mục gốc và chạy server:
 
 ```powershell
-py -3.13 -m infrastructure.server
+python -m infrastructure.server
 ```
 
 Trên macOS/Linux dùng `python3 -m infrastructure.server`.
@@ -69,12 +69,12 @@ Trên macOS/Linux dùng `python3 -m infrastructure.server`.
 Mở một terminal khác cho mỗi client:
 
 ```powershell
-py -3.13 -m ui.cli
+python -m ui.cli
 ```
 
 Trên macOS/Linux dùng `python3 -m ui.cli`. Mỗi client cần một username duy nhất, dài 3–20 ký tự ASCII, chỉ gồm chữ, số và `_`.
 
-Để thử trên hai máy trong cùng LAN, chạy server trên một máy, cho phép TCP `5000` và UDP `5001` qua firewall, rồi chạy client trên các máy cùng mạng. Nếu client không tìm được server, kiểm tra UDP broadcast và firewall.
+Để thử trên hai máy trong cùng LAN hoặc 4G hotspot, chạy server trên một máy, cho phép TCP `5000` và UDP `5001` qua firewall (hoặc chuyển mạng sang Private), rồi chạy client trên các máy cùng mạng. Nếu môi trường mạng chặn UDP broadcast (như Wi-Fi trường học), CLI tự động hỗ trợ nhập IPv4 của server để kết nối trực tiếp.
 
 ## Lệnh CLI
 
@@ -96,6 +96,24 @@ Server và CLI tự cấu hình console UTF-8 để hiển thị tiếng Việt 
 - Trong lúc truyền, thanh tiến trình `[=====>---------] %` hiển thị trực tiếp theo thời gian thực ngay trên dòng nhập lệnh `Bạn> ` ở cả máy gửi và máy nhận mà không làm trôi lịch sử chat.
 - File nhận được ghi tạm vào `downloads/.<session_id>_<filename>.part`, kiểm tra kích thước và mã băm **SHA-256** trước khi đổi tên thành file hoàn chỉnh trong thư mục `downloads/` (tự động đánh số `file (1).ext` nếu trùng tên). Nếu mất kết nối hoặc sai mã băm, file `.part` sẽ tự động được dọn sạch.
 
+## Kiểm thử tự động (Unit Tests)
+
+Chạy toàn bộ bộ test suite (79 tests) bao phủ hạ tầng, chat và truyền file:
+
+```powershell
+python -m unittest discover -s tests -t . -v
+```
+
+## Đóng gói nộp bài (Packaging)
+
+Tạo file ZIP nộp bài chuẩn quy cách (tự động loại trừ khóa riêng CA `dev-ca-key.pem`, `.venv`, cache và file tạm):
+
+```powershell
+python scripts/package_submission.py
+```
+
+File ZIP thành phẩm sẽ được lưu tại `dist/Distributed-Client-Server-Collaboration-Application.zip`.
+
 ## Cấu trúc liên quan
 
 - `common/`: frame TCP, tên các loại bản tin và cấu hình console.
@@ -105,9 +123,10 @@ Server và CLI tự cấu hình console UTF-8 để hiển thị tiếng Việt 
 - `transfer/`: module truyền file trọn luồng (`sender.py`, `receiver.py`, `server_handler.py`, `integrity.py`).
 - `docs/protocol.md`: đặc tả bản tin và framing.
 - `docs/architecture.md`: thành phần, sequence diagram chat/truyền file và luồng xử lý.
+- `docs/diagrams/`: mã nguồn PlantUML (`.puml`) cho các sequence diagram (chat, truyền file).
 - `docs/chat_integration_contract.md`: ranh giới tích hợp TV1/TV2/TV3.
 - `docs/test_results.md`: kết quả kiểm thử hạ tầng, chat và truyền file.
 
 ## Tài liệu báo cáo
 
-Báo cáo PDF cuối tổng hợp kiến trúc, đặc tả protocol, sequence diagram chat/truyền file và các vấn đề kỹ thuật đã giải quyết.
+Báo cáo PDF cuối tổng hợp kiến trúc, đặc tả protocol, sequence diagram chat/truyền file và các vấn đề kỹ thuật đã giải quyết. Mã nguồn PlantUML các biểu đồ tuần tự có sẵn trong `docs/diagrams/` để xuất ảnh chèn vào báo cáo.

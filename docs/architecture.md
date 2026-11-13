@@ -78,6 +78,8 @@ flowchart LR
 
 ## Sequence diagram chat
 
+*(Mã nguồn PlantUML chi tiết có tại [`docs/diagrams/chat_sequence.puml`](file:///d:/learneddoc/mmt/btl/Huy/Distributed-Client-Server-Collaboration-Application/docs/diagrams/chat_sequence.puml))*
+
 ```mermaid
 sequenceDiagram
     participant UIA as CLI người gửi
@@ -165,6 +167,8 @@ stateDiagram-v2
 7. Các phiên truyền file bị treo hoặc không hoạt động quá 60 giây sẽ được `prune_stale_sessions()` tự động thu hồi và dọn dẹp định kỳ mỗi chu kỳ heartbeat.
 
 ## Sequence diagram truyền file
+
+*(Mã nguồn PlantUML chi tiết có tại [`docs/diagrams/file_transfer_sequence.puml`](file:///d:/learneddoc\mmt\btl\Huy\Distributed-Client-Server-Collaboration-Application/docs/diagrams/file_transfer_sequence.puml))*
 
 ```mermaid
 sequenceDiagram
