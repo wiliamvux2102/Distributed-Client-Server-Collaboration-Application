@@ -59,13 +59,32 @@ class FileReceiver:
         self._lock = threading.Lock()
 
     def clean_stale_temp_files(self) -> None:
-        """Remove any leftover .part files from previous interrupted sessions."""
+        """Remove leftover .part files from previous crashed sessions without disturbing active downloads."""
         try:
             for p in self.download_dir.iterdir():
                 if p.is_file() and (p.name.endswith(".part") or ".part" in p.name):
+                    # Check if file is currently open / in-use by another active process
+                    try:
+                        import fcntl
+                        try:
+                            with open(p, "r+b") as test_f:
+                                fcntl.flock(test_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                fcntl.flock(test_f, fcntl.LOCK_UN)
+                        except (BlockingIOError, OSError):
+                            # File is locked by an active process, do not delete!
+                            continue
+                    except ImportError:
+                        # On Windows, test if file can be opened for writing without sharing violation
+                        try:
+                            with open(p, "a+b") as test_f:
+                                pass
+                        except (PermissionError, OSError):
+                            # File is currently held open by another process, do not delete!
+                            continue
+
                     try:
                         p.unlink(missing_ok=True)
-                    except Exception:
+                    except (PermissionError, OSError):
                         pass
         except Exception:
             pass
@@ -112,6 +131,11 @@ class FileReceiver:
 
             try:
                 file_handle = temp_path.open("wb")
+                try:
+                    import fcntl
+                    fcntl.flock(file_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except Exception:
+                    pass
                 session = DownloadSession(
                     session_id=session_id,
                     sender=sender,

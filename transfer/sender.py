@@ -335,10 +335,28 @@ class ClientFileTransferManager:
         """Unpack embedded base64 payload and route to receiver or sender."""
         payload = b""
         if "binary_payload_base64" in message:
+            raw_b64 = message.pop("binary_payload_base64")
             try:
-                payload = base64.b64decode(message.pop("binary_payload_base64"))
-            except Exception:
-                pass
+                payload = base64.b64decode(raw_b64, validate=True)
+            except Exception as error:
+                session_id = message.get("session_id", "")
+                self._report_error(
+                    session_id,
+                    message.get("filename", "unknown"),
+                    f"Dữ liệu Base64 nhận được không hợp lệ: {error}",
+                )
+                if session_id:
+                    self.send_fn({
+                        "type": "FILE_ERROR",
+                        "session_id": session_id,
+                        "code": "ERR_CORRUPT_PAYLOAD",
+                        "reason": f"Base64 decoding failed: {error}",
+                    })
+                    with self._lock:
+                        self._active_transfers.pop(session_id, None)
+                    self._trigger_update()
+                    self.receiver.abort_all(f"Corrupt base64 payload: {error}")
+                return
 
         msg_type = message.get("type", "")
         if msg_type == "FILE_ERROR":

@@ -59,6 +59,14 @@ def disconnect_expired_sessions() -> None:
         except Exception:
             pass
 
+    try:
+        from transfer.server_handler import file_transfer_server_handler
+        pruned = file_transfer_server_handler.prune_stale_sessions(timeout_seconds=60.0)
+        for sid in pruned:
+            print(f"[TRANSFER] Đã dọn dẹp phiên file bị treo do timeout: {sid}")
+    except Exception:
+        pass
+
 def serve_discovery(stop_event: threading.Event) -> None:
     """Nghe yêu cầu discovery và heartbeat qua UDP."""
 

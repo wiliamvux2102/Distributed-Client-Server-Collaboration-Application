@@ -194,6 +194,117 @@ class TestServerHandler(unittest.TestCase):
         self.assertEqual(h["code"], "ERR_PEER_DISCONNECTED")
         self.assertNotIn(sid, self.handler._active_sessions)
 
+    def test_handle_init_invalid_filesize_returns_error(self) -> None:
+        header = {
+            "type": "FILE_INIT",
+            "session_id": "sid_bad_size",
+            "sender": "alice",
+            "receiver": "bob",
+            "filename": "doc.pdf",
+            "filesize": "not_a_number",
+        }
+        self.handler.handle_message("alice", header, b"")
+        self.assertEqual(len(self.sent_messages), 1)
+        target, h, p = self.sent_messages[0]
+        self.assertEqual(target, "alice")
+        self.assertEqual(h["type"], "FILE_ERROR")
+        self.assertEqual(h["code"], "ERR_INVALID_METADATA")
+
+    def test_handle_init_path_traversal_filename_returns_error(self) -> None:
+        header = {
+            "type": "FILE_INIT",
+            "session_id": "sid_bad_name",
+            "sender": "alice",
+            "receiver": "bob",
+            "filename": "../../evil.sh",
+            "filesize": 100,
+        }
+        self.handler.handle_message("alice", header, b"")
+        self.assertEqual(len(self.sent_messages), 1)
+        target, h, p = self.sent_messages[0]
+        self.assertEqual(target, "alice")
+        self.assertEqual(h["type"], "FILE_ERROR")
+        self.assertEqual(h["code"], "ERR_INVALID_METADATA")
+
+    def test_handle_init_duplicate_session_id_rejected(self) -> None:
+        sid = "sid_dup"
+        header = {
+            "type": "FILE_INIT",
+            "session_id": sid,
+            "sender": "alice",
+            "receiver": "bob",
+            "filename": "file.txt",
+            "filesize": 50,
+        }
+        self.handler.handle_message("alice", header, b"")
+        self.assertIn(sid, self.handler._active_sessions)
+        self.sent_messages.clear()
+
+        # Try initializing another session with the same session_id
+        self.handler.handle_message("alice", header, b"")
+        self.assertEqual(len(self.sent_messages), 1)
+        target, h, p = self.sent_messages[0]
+        self.assertEqual(target, "alice")
+        self.assertEqual(h["type"], "FILE_ERROR")
+        self.assertEqual(h["code"], "ERR_DUPLICATE_SESSION")
+
+    def test_relay_rejects_unauthorized_sender_role(self) -> None:
+        sid = "sid_role"
+        self.handler.handle_message(
+            "alice",
+            {"type": "FILE_INIT", "session_id": sid, "sender": "alice", "receiver": "bob", "filename": "f.txt", "filesize": 10},
+            b"",
+        )
+        self.sent_messages.clear()
+
+        # Sender 'alice' illegally sends FILE_ACCEPT (which only receiver 'bob' can send)
+        self.handler.handle_message("alice", {"type": "FILE_ACCEPT", "session_id": sid}, b"")
+        self.assertEqual(len(self.sent_messages), 1)
+        target, h, p = self.sent_messages[0]
+        self.assertEqual(target, "alice")
+        self.assertEqual(h["type"], "FILE_ERROR")
+        self.assertEqual(h["code"], "ERR_UNAUTHORIZED_ROLE")
+
+    def test_relay_rejects_invalid_state_transition(self) -> None:
+        sid = "sid_state"
+        self.handler.handle_message(
+            "alice",
+            {"type": "FILE_INIT", "session_id": sid, "sender": "alice", "receiver": "bob", "filename": "f.txt", "filesize": 10},
+            b"",
+        )
+        self.sent_messages.clear()
+
+        # Alice attempts to send chunk before Bob accepts (session in INIT state)
+        self.handler.handle_message("alice", {"type": "FILE_CHUNK", "session_id": sid, "chunk_index": 0}, b"data")
+        self.assertEqual(len(self.sent_messages), 1)
+        target, h, p = self.sent_messages[0]
+        self.assertEqual(target, "alice")
+        self.assertEqual(h["type"], "FILE_ERROR")
+        self.assertEqual(h["code"], "ERR_INVALID_STATE")
+
+    def test_prune_stale_sessions(self) -> None:
+        import time
+        sid = "sid_stale"
+        self.handler.handle_message(
+            "alice",
+            {"type": "FILE_INIT", "session_id": sid, "sender": "alice", "receiver": "bob", "filename": "f.txt", "filesize": 10},
+            b"",
+        )
+        self.assertIn(sid, self.handler._active_sessions)
+        self.sent_messages.clear()
+
+        # Manually backdate last_updated
+        self.handler._active_sessions[sid].last_updated = time.time() - 100
+
+        pruned = self.handler.prune_stale_sessions(timeout_seconds=60)
+        self.assertEqual(pruned, [sid])
+        self.assertNotIn(sid, self.handler._active_sessions)
+        # Both alice and bob receive timeout error
+        self.assertEqual(len(self.sent_messages), 2)
+        targets = {m[0] for m in self.sent_messages}
+        self.assertEqual(targets, {"alice", "bob"})
+        self.assertEqual(self.sent_messages[0][1]["code"], "ERR_SESSION_TIMEOUT")
+
     def test_register_file_transfer_handlers_binds_all_types(self) -> None:
         dispatcher = DummyDispatcher()
         register_file_transfer_handlers(dispatcher)
