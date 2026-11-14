@@ -1,4 +1,3 @@
-# Cả nhóm: Package kiểm thử các module theo phần việc được phân công.
 from pathlib import Path
 import sys
 

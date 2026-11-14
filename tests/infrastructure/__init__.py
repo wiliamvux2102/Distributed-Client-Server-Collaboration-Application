@@ -1,4 +1,3 @@
-# TV1: Kiểm thử kết nối, đăng nhập, trạng thái, ngắt đột ngột, UDP và TLS.
 from pathlib import Path
 import sys
 

@@ -1,4 +1,3 @@
-# TV1: Xử lý UDP discovery, heartbeat và timeout.
 import json
 import socket
 import sys

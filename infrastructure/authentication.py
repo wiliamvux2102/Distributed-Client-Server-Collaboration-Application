@@ -1,5 +1,3 @@
-# TV1: Xử lý đăng nhập và kiểm tra username của client.
-
 def normalize_username(raw_username: object) -> str:
     """Chuẩn hóa khoảng trắng và kiểm tra username."""
 

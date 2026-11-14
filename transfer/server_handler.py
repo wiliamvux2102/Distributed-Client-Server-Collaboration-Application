@@ -440,7 +440,7 @@ class FileTransferServerHandler:
 
 
 # ---------------------------------------------------------------------------
-# Server router integration (wiring with TV1 MessageDispatcher & user_registry)
+# Server router integration
 # ---------------------------------------------------------------------------
 
 def _send_to_user_bridge(target_username: str, header: dict[str, Any], payload: bytes = b"") -> bool:
@@ -506,7 +506,7 @@ def handle_file_transfer_message(context: Any, message: dict[str, Any]) -> None:
 
 
 def register_file_transfer_handlers(dispatcher: Any) -> None:
-    """Register all FILE_* message types with TV1's MessageDispatcher."""
+    """Register all FILE_*"""
     for msg_type in (
         mt.FILE_INIT,
         mt.FILE_ACCEPT,

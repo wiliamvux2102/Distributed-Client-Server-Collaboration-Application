@@ -1,4 +1,3 @@
-# TV1: Cấu hình TLS và chứng chỉ cho kết nối TCP phía server và client.
 """Tạo cấu hình TLS dùng chung cho server và client."""
 
 import ssl

@@ -106,7 +106,7 @@ Server và CLI tự cấu hình console UTF-8 để hiển thị tiếng Việt 
 
 ## Kiểm thử tự động (Unit Tests)
 
-Chạy toàn bộ bộ test suite (79 tests) bao phủ hạ tầng, chat và truyền file:
+Chạy toàn bộ bộ test suite (88 tests) bao phủ hạ tầng, chat, truyền file và PySide6 GUI:
 
 ```powershell
 python -m unittest discover -s tests -t . -v
@@ -133,8 +133,7 @@ File ZIP thành phẩm sẽ được lưu tại `dist/Distributed-Client-Server-
 - `docs/protocol.md`: đặc tả bản tin và framing.
 - `docs/architecture.md`: thành phần, sequence diagram chat/truyền file và luồng xử lý.
 - `docs/diagrams/`: ảnh biểu đồ sequence diagram (`chat_sequence.png`, `file_transfer_sequence.png`).
-- `docs/chat_integration_contract.md`: ranh giới tích hợp TV1/TV2/TV3.
-- `docs/test_results.md`: kết quả kiểm thử hạ tầng, chat và truyền file.
+- `docs/test_results.md`: kết quả kiểm thử hạ tầng, chat, truyền file và GUI.
 
 ## Tài liệu báo cáo
 

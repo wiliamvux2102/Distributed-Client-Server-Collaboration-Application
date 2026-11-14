@@ -1,5 +1,3 @@
-# TV1: Định nghĩa các loại bản tin và mã lỗi theo giao thức chung.
-
 # Server xác nhận đã tiếp nhận kết nối.
 SERVER_READY = "SERVER_READY"
 
@@ -49,7 +47,7 @@ UDP_DISCOVERY_RESPONSE = "UDP_DISCOVERY_RESPONSE"
 
 UDP_HEARTBEAT = "UDP_HEARTBEAT"
 
-# File Transfer (Member 3)
+# File Transfer
 FILE_INIT = "FILE_INIT"
 FILE_ACCEPT = "FILE_ACCEPT"
 FILE_CHUNK = "FILE_CHUNK"
