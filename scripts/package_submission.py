@@ -29,6 +29,7 @@ EXCLUDED_DIRS = {
     ".ruff_cache",
     ".vscode",
     ".idea",
+    ".agents",
     "dist",
     "build",
 }

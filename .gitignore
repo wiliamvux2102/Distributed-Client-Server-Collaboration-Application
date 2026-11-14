@@ -49,6 +49,7 @@ dist/
 # Cấu hình IDE cá nhân
 .vscode/
 .idea/
+.agents/
 *.swp
 *.swo
 
