@@ -123,10 +123,10 @@ File ZIP thành phẩm sẽ được lưu tại `dist/Distributed-Client-Server-
 - `transfer/`: module truyền file trọn luồng (`sender.py`, `receiver.py`, `server_handler.py`, `integrity.py`).
 - `docs/protocol.md`: đặc tả bản tin và framing.
 - `docs/architecture.md`: thành phần, sequence diagram chat/truyền file và luồng xử lý.
-- `docs/diagrams/`: mã nguồn PlantUML (`.puml`) cho các sequence diagram (chat, truyền file).
+- `docs/diagrams/`: ảnh biểu đồ sequence diagram (`chat_sequence.png`, `file_transfer_sequence.png`).
 - `docs/chat_integration_contract.md`: ranh giới tích hợp TV1/TV2/TV3.
 - `docs/test_results.md`: kết quả kiểm thử hạ tầng, chat và truyền file.
 
 ## Tài liệu báo cáo
 
-Báo cáo PDF cuối tổng hợp kiến trúc, đặc tả protocol, sequence diagram chat/truyền file và các vấn đề kỹ thuật đã giải quyết. Mã nguồn PlantUML các biểu đồ tuần tự có sẵn trong `docs/diagrams/` để xuất ảnh chèn vào báo cáo.
+Báo cáo PDF cuối tổng hợp kiến trúc, đặc tả protocol, sequence diagram chat/truyền file và các vấn đề kỹ thuật đã giải quyết. Các biểu đồ tuần tự đã được xuất ảnh sẵn trong `docs/diagrams/` và nhúng trực tiếp vào `docs/architecture.md`.

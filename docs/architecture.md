@@ -78,45 +78,7 @@ flowchart LR
 
 ## Sequence diagram chat
 
-*(Mã nguồn PlantUML chi tiết có tại [`docs/diagrams/chat_sequence.puml`](file:///d:/learneddoc/mmt/btl/Huy/Distributed-Client-Server-Collaboration-Application/docs/diagrams/chat_sequence.puml))*
-
-```mermaid
-sequenceDiagram
-    participant UIA as CLI người gửi
-    participant ChatA as ClientChat người gửi
-    participant SessionA as ClientSession người gửi
-    participant Worker as Server worker
-    participant Handler as Chat server handler
-    participant SessionB as ClientSession người nhận
-    participant ChatB as ClientChat người nhận
-    participant UIB as CLI người nhận
-
-    alt Chat riêng
-        UIA->>ChatA: send_direct(username, text)
-        ChatA->>SessionA: send(DIRECT_MESSAGE)
-        SessionA->>Worker: TCP/TLS frame
-        Worker->>Handler: dispatch(context, message)
-        Handler->>SessionB: send_to_user(DIRECT_DELIVERY)
-        SessionB->>ChatB: callback(DIRECT_DELIVERY)
-        ChatB->>UIB: on_message(sender, text, false)
-        Handler->>SessionA: DELIVERY_STATUS
-        SessionA->>ChatA: callback(DELIVERY_STATUS)
-        ChatA->>UIA: on_status(...)
-    else Chat chung
-        UIA->>ChatA: send_broadcast(text)
-        ChatA->>SessionA: send(BROADCAST_MESSAGE)
-        SessionA->>Worker: TCP/TLS frame
-        Worker->>Handler: dispatch(context, message)
-        loop Mỗi người online khác người gửi
-            Handler->>SessionB: send_to_user(BROADCAST_DELIVERY)
-            SessionB->>ChatB: callback(BROADCAST_DELIVERY)
-            ChatB->>UIB: on_message(sender, text, true)
-        end
-        Handler->>SessionA: DELIVERY_STATUS(delivered_count)
-        SessionA->>ChatA: callback(DELIVERY_STATUS)
-        ChatA->>UIA: on_status(...)
-    end
-```
+![Sequence diagram chat](diagrams/chat_sequence.png)
 
 ## Luồng nhận và đồng thời
 
@@ -168,42 +130,7 @@ stateDiagram-v2
 
 ## Sequence diagram truyền file
 
-*(Mã nguồn PlantUML chi tiết có tại [`docs/diagrams/file_transfer_sequence.puml`](file:///d:/learneddoc\mmt\btl\Huy\Distributed-Client-Server-Collaboration-Application/docs/diagrams/file_transfer_sequence.puml))*
-
-```mermaid
-sequenceDiagram
-    participant Sender as Client gửi (FileSender)
-    participant Server as Server (FileTransferServerHandler)
-    participant Receiver as Client nhận (FileReceiver)
-
-    Sender->>Sender: Tính SHA-256 & tạo session_id
-    Sender->>Server: FILE_INIT (session_id, filename, filesize, sha256, total_chunks)
-    alt Người nhận offline
-        Server-->>Sender: FILE_ERROR (ERR_USER_OFFLINE)
-    else Người nhận online
-        Server->>Receiver: Chuyển tiếp FILE_INIT
-        Receiver->>Receiver: Tạo file tạm .<session_id>_<name>.part
-        Receiver->>Server: FILE_ACCEPT (session_id)
-        Server->>Sender: Chuyển tiếp FILE_ACCEPT
-        loop Từng chunk_index từ 0 đến total_chunks - 1
-            Sender->>Server: FILE_CHUNK (session_id, chunk_index, data)
-            Server->>Receiver: Chuyển tiếp FILE_CHUNK
-            Receiver->>Receiver: Kiểm tra thứ tự chunk & ghi vào file .part
-        end
-        Sender->>Server: FILE_END (session_id)
-        Server->>Receiver: Chuyển tiếp FILE_END
-        Receiver->>Receiver: Kiểm tra filesize & SHA-256
-        alt Toàn vẹn hợp lệ
-            Receiver->>Receiver: os.replace(.part -> downloads/<filename>)
-            Receiver->>Server: FILE_RESULT (status="OK")
-            Server->>Sender: Chuyển tiếp FILE_RESULT (OK)
-        else Lỗi toàn vẹn / sai hash
-            Receiver->>Receiver: Xóa file .part
-            Receiver->>Server: FILE_RESULT (status="FAILED", reason)
-            Server->>Sender: Chuyển tiếp FILE_RESULT (FAILED)
-        end
-    end
-```
+![Sequence diagram truyền file](diagrams/file_transfer_sequence.png)
 
 ## Giới hạn hiện tại
 
