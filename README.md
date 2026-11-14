@@ -54,7 +54,7 @@ cp config.example.json config.json
 
 `config.json` được `.gitignore` bỏ qua. Mặc định server bind vào `0.0.0.0:5000`; UDP discovery/heartbeat dùng port `5001`. Client tin CA tại `certs/dev-ca.pem` và xác minh tên `collab-server.local`.
 
-Trước khi chạy server, kiểm tra rằng đường dẫn `tls.server_private_key` trong cấu hình tồn tại và khóa đó khớp với `tls.server_certificate`. Không commit khóa riêng TLS. Nếu nhóm tạo bộ chứng chỉ phát triển mới, cần cấu hình cùng CA tin cậy cho client và tên máy chủ có trong SAN của chứng chỉ.
+Trước khi chạy server, kiểm tra rằng đường dẫn `tls.server_private_key` trong cấu hình tồn tại và khóa đó khớp với `tls.server_certificate`. Không commit khóa riêng TLS. Nếu muốn tạo bộ chứng chỉ phát triển mới, cần cấu hình cùng CA tin cậy cho client và tên máy chủ có trong SAN của chứng chỉ.
 
 ## Chạy ứng dụng
 
@@ -91,7 +91,7 @@ Trên macOS/Linux dùng `python3 -m ui.gui` hoặc `python3 -m ui.cli`. Mỗi cl
 | `/online` | Xem username đang online. |
 | `/msg <username> <nội dung>` | Gửi tin riêng. |
 | `/all <nội dung>` | Gửi chat chung. |
-| `/sendfile <username> <đường_dẫn_file>` | Gửi file tới người dùng khác. |
+| `/sendfile <username|all> <đường_dẫn_file>` | Gửi file tới một người dùng hoặc tới tất cả người đang online (`all` / `#all`). |
 | `/help` | Hiện hướng dẫn. |
 | `/quit` | Đăng xuất và đóng kết nối. |
 
@@ -100,13 +100,13 @@ Server và CLI tự cấu hình console UTF-8 để hiển thị tiếng Việt 
 
 ### Hướng dẫn truyền file (`/sendfile`)
 
-- Cú pháp: `/sendfile <username> <đường_dẫn_file>` (hỗ trợ cả đường dẫn có khoảng trắng hoặc bọc trong dấu ngoặc kép `"..."`).
+- Cú pháp: `/sendfile <username|all> <đường_dẫn_file>` (hỗ trợ cả đường dẫn có khoảng trắng hoặc bọc trong dấu ngoặc kép `"..."`). Dùng `all` (hoặc `#all`) để gửi file tới tất cả người dùng đang online; trên Desktop GUI, có thể gửi file ngay trong kênh `#all` (Chat chung) hoặc trong tin nhắn riêng.
 - Trong lúc truyền, thanh tiến trình `[=====>---------] %` hiển thị trực tiếp theo thời gian thực ngay trên dòng nhập lệnh `Bạn> ` ở cả máy gửi và máy nhận mà không làm trôi lịch sử chat.
 - File nhận được ghi tạm vào `downloads/.<session_id>_<filename>.part`, kiểm tra kích thước và mã băm **SHA-256** trước khi đổi tên thành file hoàn chỉnh trong thư mục `downloads/` (tự động đánh số `file (1).ext` nếu trùng tên). Nếu mất kết nối hoặc sai mã băm, file `.part` sẽ tự động được dọn sạch.
 
 ## Kiểm thử tự động (Unit Tests)
 
-Chạy toàn bộ bộ test suite (88 tests) bao phủ hạ tầng, chat, truyền file và PySide6 GUI:
+Chạy toàn bộ bộ test suite (91 tests) bao phủ hạ tầng, chat, truyền file và PySide6 GUI:
 
 ```powershell
 python -m unittest discover -s tests -t . -v

@@ -381,6 +381,52 @@ class SessionController:
                 return
         self._executor.submit(self._send_file_worker, gen, ft_manager, recipient, Path(file_path))
 
+    def send_file_broadcast(self, recipients: list[str], file_path: str | Path) -> None:
+        with self._lock:
+            gen = self._session_gen
+            ft_manager = self._ft_manager
+            session = self._session
+            if self._state != ConnectionState.CONNECTED or ft_manager is None or session is None:
+                return
+            self_user = session.username
+        targets = [u for u in recipients if u and u != self_user]
+        if not targets:
+            self.bridge.server_error_received.emit(
+                ErrorEvent(
+                    gen=gen,
+                    code="NO_ONLINE_RECIPIENTS",
+                    message="Không có người dùng nào khác đang online để gửi file.",
+                )
+            )
+            return
+        self._executor.submit(
+            self._send_file_broadcast_worker, gen, ft_manager, targets, Path(file_path)
+        )
+
+    def _send_file_broadcast_worker(
+        self,
+        gen: int,
+        ft_manager: ClientFileTransferManager,
+        recipients: list[str],
+        path: Path,
+    ) -> None:
+        if not path.is_file():
+            self.bridge.server_error_received.emit(
+                ErrorEvent(gen=gen, code="FILE_SEND_ERROR", message=f"Không tìm thấy file: {path}")
+            )
+            return
+        for peer in recipients:
+            try:
+                ft_manager.sender.start_transfer(peer, path)
+            except Exception as error:
+                self.bridge.server_error_received.emit(
+                    ErrorEvent(
+                        gen=gen,
+                        code="FILE_SEND_ERROR",
+                        message=f"Lỗi gửi file tới {peer}: {error}",
+                    )
+                )
+
     def _send_safe(self, gen: int, session: ClientSession, message: dict[str, Any]) -> None:
         try:
             session.send(message)

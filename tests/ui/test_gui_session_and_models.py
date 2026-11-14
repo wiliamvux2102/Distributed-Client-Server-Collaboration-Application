@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+import tempfile
 import threading
 import time
 import unittest
@@ -253,6 +255,78 @@ class GuiControllerAndWindowTests(unittest.TestCase):
         self.assertEqual(len(server_errors), 1)
         ft_mgr.cleanup.assert_not_called()
         ctrl.shutdown_sync(timeout=0.5)
+
+    def test_send_file_broadcast_fans_out_to_all_other_peers(self) -> None:
+        _get_app()
+        ctrl = SessionController()
+        ctrl._state = ConnectionState.CONNECTED
+        ctrl._session_gen = 9
+        session = Mock()
+        session.username = "alice"
+        ft_mgr = Mock()
+        ctrl._session = session
+        ctrl._ft_manager = ft_mgr
+
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            tf.write(b"broadcast file data")
+            tmp_path = Path(tf.name)
+
+        try:
+            ctrl.send_file_broadcast(["alice", "bob", "charlie"], tmp_path)
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and ft_mgr.sender.start_transfer.call_count < 2:
+                time.sleep(0.01)
+
+            calls = [c.args for c in ft_mgr.sender.start_transfer.call_args_list]
+            self.assertEqual(calls, [("bob", tmp_path), ("charlie", tmp_path)])
+        finally:
+            tmp_path.unlink(missing_ok=True)
+            ctrl.shutdown_sync(timeout=0.5)
+
+    def test_send_file_broadcast_empty_peers_emits_error(self) -> None:
+        _get_app()
+        ctrl = SessionController()
+        ctrl._state = ConnectionState.CONNECTED
+        ctrl._session_gen = 10
+        session = Mock()
+        session.username = "alice"
+        ctrl._session = session
+        ctrl._ft_manager = Mock()
+
+        errors: list[str] = []
+        ctrl.bridge.server_error_received.connect(lambda ev: errors.append(ev.code))
+        ctrl.send_file_broadcast(["alice"], "dummy.txt")
+        QApplication.processEvents()
+        self.assertEqual(errors, ["NO_ONLINE_RECIPIENTS"])
+        ctrl.shutdown_sync(timeout=0.5)
+
+    def test_cli_sendfile_all_queues_file_and_requests_online_list(self) -> None:
+        from common import message_types as mt
+        from ui import cli
+
+        session = Mock()
+        session.username = "alice"
+        chat = Mock()
+        ft_mgr = Mock()
+        pending: list[str] = []
+
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            tf.write(b"cli broadcast")
+            tmp_path = Path(tf.name)
+
+        try:
+            keep_going = cli._process_input(
+                f'/sendfile all "{tmp_path}"',
+                session,
+                chat,
+                ft_mgr,
+                pending_broadcast_files=pending,
+            )
+            self.assertTrue(keep_going)
+            self.assertEqual(pending, [str(tmp_path)])
+            session.send.assert_called_once_with({"type": mt.LIST_ONLINE})
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

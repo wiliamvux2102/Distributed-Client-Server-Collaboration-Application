@@ -1,5 +1,7 @@
 """Command-line interface for the collaboration client."""
 
+import os
+from pathlib import Path
 import socket
 import ssl
 import threading
@@ -84,6 +86,7 @@ def _print_help() -> None:
         "  /msg <user> <nội dung>  Gửi tin riêng\n"
         "  /all <nội dung>         Gửi chat chung\n"
         "  /sendfile <user> <path> Gửi file tới người dùng khác\n"
+        "  /sendfile all <path>    Gửi file tới tất cả người đang online\n"
         "  /help                   Xem hướng dẫn\n"
         "  /quit                   Thoát\n"
         "Có thể nhập văn bản thường để gửi chat chung."
@@ -95,6 +98,8 @@ def _process_input(
     session: ClientSession,
     chat: ClientChat,
     ft_manager: ClientFileTransferManager | None = None,
+    pending_broadcast_files: list[str] | None = None,
+    pending_lock: threading.Lock | None = None,
 ) -> bool:
     """Process one user input line; return False when the CLI should exit."""
 
@@ -144,6 +149,25 @@ def _process_input(
 
         recipient = parts[1].strip()
         filepath = parts[2].strip("\"' ")
+
+        if recipient in ("all", "#all"):
+            if ft_manager is None:
+                print("[LỖI] Trình quản lý truyền file chưa được khởi tạo.")
+                return True
+            if not Path(filepath).is_file():
+                print(f"[ERROR] File not found: {filepath}")
+                return True
+            if pending_broadcast_files is not None:
+                if pending_lock is not None:
+                    with pending_lock:
+                        pending_broadcast_files.append(filepath)
+                else:
+                    pending_broadcast_files.append(filepath)
+                session.send({"type": mt.LIST_ONLINE})
+                print("[FILE] Đang lấy danh sách người online để gửi file...")
+            else:
+                print("[LỖI] Không thể gửi file broadcast trong ngữ cảnh này.")
+            return True
 
         if recipient == session.username:
             print("[LỖI] Không thể gửi file cho chính mình.")
@@ -209,7 +233,37 @@ def main() -> None:
         )
         ft_manager.register_handlers(session.register_handler)
 
-        session.register_handler(mt.ONLINE_LIST, _handle_online_list)
+        pending_broadcast_files: list[str] = []
+        pending_lock = threading.Lock()
+
+        def _on_online_list_for_cli(message: dict) -> None:
+            users = message.get("users")
+            if not isinstance(users, list) or any(
+                not isinstance(u, str) for u in users
+            ):
+                _print_async("[LỖI] ONLINE_LIST có cấu trúc không hợp lệ.")
+                return
+
+            queued_path: str | None = None
+            with pending_lock:
+                if pending_broadcast_files:
+                    queued_path = pending_broadcast_files.pop(0)
+
+            if queued_path is not None:
+                peers = [u for u in users if u != session.username]
+                if not peers:
+                    _print_async("[FILE] Không có người dùng nào khác đang online để gửi.")
+                    return
+                _print_async(
+                    f"[FILE] Bắt đầu gửi '{Path(queued_path).name}' tới {len(peers)} người: {', '.join(peers)}"
+                )
+                for peer in peers:
+                    ft_manager.send_file(peer, queued_path)
+                return
+
+            _handle_online_list(message)
+
+        session.register_handler(mt.ONLINE_LIST, _on_online_list_for_cli)
         session.register_handler(mt.ERROR, _handle_server_error)
         session.register_handler(mt.BYE, _handle_bye)
 
@@ -240,7 +294,14 @@ def main() -> None:
                     break
 
                 try:
-                    if not _process_input(line, session, chat, ft_manager):
+                    if not _process_input(
+                        line,
+                        session,
+                        chat,
+                        ft_manager,
+                        pending_broadcast_files=pending_broadcast_files,
+                        pending_lock=pending_lock,
+                    ):
                         break
                 except (OSError, RuntimeError, ValueError) as error:
                     print(f"[LỖI] {error}")

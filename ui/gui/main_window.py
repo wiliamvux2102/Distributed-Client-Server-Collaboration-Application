@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QModelIndex, QPoint, Qt, Signal
+from PySide6.QtCore import QModelIndex, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QInputMethodEvent, QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -179,6 +179,11 @@ class MainWindow(QMainWindow):
         self._active_gen = 0
         self._current_username = ""
         self._transfer_cards: dict[str, TransferItemCard] = {}
+        self._status_reset_timer = QTimer(self)
+        self._status_reset_timer.setSingleShot(True)
+        self._status_reset_timer.timeout.connect(
+            lambda: self.global_status_label.setText("Đã kết nối TLS")
+        )
 
         self.setStyleSheet(build_stylesheet())
         self._build_ui()
@@ -378,6 +383,7 @@ class MainWindow(QMainWindow):
 
         self.transfer_scroll = QScrollArea()
         self.transfer_scroll.setWidgetResizable(True)
+        self.transfer_scroll.setMinimumHeight(104)
         self.transfer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.transfer_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.transfer_scroll.setStyleSheet("background: transparent;")
@@ -422,8 +428,8 @@ class MainWindow(QMainWindow):
 
         self.header_send_file_btn = QPushButton("Gửi file")
         self.header_send_file_btn.setIcon(get_icon("paperclip", PALETTE["text_primary"], 16))
-        self.header_send_file_btn.setEnabled(False)
-        self.header_send_file_btn.setToolTip("Chỉ khả dụng khi đang chọn chat riêng với 1 người dùng")
+        self.header_send_file_btn.setEnabled(True)
+        self.header_send_file_btn.setToolTip("Gửi file tới cuộc trò chuyện hiện tại")
 
         ch_layout.addLayout(title_col, 1)
         ch_layout.addWidget(self.header_send_file_btn)
@@ -484,8 +490,8 @@ class MainWindow(QMainWindow):
         self.attach_button.setObjectName("IconButton")
         self.attach_button.setIcon(get_icon("paperclip", PALETTE["text_primary"], 20))
         self.attach_button.setFixedSize(40, 40)
-        self.attach_button.setEnabled(False)
-        self.attach_button.setToolTip("Đính kèm file gửi tới người đang chat")
+        self.attach_button.setEnabled(True)
+        self.attach_button.setToolTip("Đính kèm file gửi tới cuộc trò chuyện hiện tại")
 
         self.composer = ChatComposer()
         self.send_button = QPushButton("Gửi")
@@ -636,6 +642,7 @@ class MainWindow(QMainWindow):
         if event.ok:
             # Protocol has no message_id: report globally without attaching to a specific bubble
             self.global_status_label.setText(event.message or "Server đã tiếp nhận tin nhắn.")
+            self._status_reset_timer.start(4000)
         else:
             code_part = f"[{event.code}] " if event.code else ""
             self._show_error_banner(f"{code_part}{event.message}")
@@ -671,8 +678,19 @@ class MainWindow(QMainWindow):
         else:
             card.update_record(rec)
 
-        if event.event == "failed" and event.error:
-            self._show_error_banner(f"Lỗi truyền file '{rec.filename}': {event.error}")
+        if event.event == "completed":
+            has_active = any(
+                r.state in ("INIT_SENT", "TRANSFERRING", "AWAITING_VERIFICATION", "RECEIVING")
+                for r in self.store.transfers.values()
+            )
+            if not has_active:
+                self.global_status_label.setText(f"Đã truyền xong '{rec.filename}'.")
+                self._status_reset_timer.start(4000)
+        elif event.event == "failed":
+            self.global_status_label.setText(f"Truyền file '{rec.filename}' thất bại.")
+            self._status_reset_timer.start(4000)
+            if event.error:
+                self._show_error_banner(f"Lỗi truyền file '{rec.filename}': {event.error}")
 
     def _show_error_banner(self, text: str) -> None:
         self.error_banner_label.setText(text)
@@ -743,8 +761,15 @@ class MainWindow(QMainWindow):
         self.conv_title_label.setText(
             f"@{cid} — Tin nhắn riêng" if is_dm else "#all — Chat chung"
         )
-        self.attach_button.setEnabled(is_dm)
-        self.header_send_file_btn.setEnabled(is_dm)
+        self.attach_button.setEnabled(True)
+        self.header_send_file_btn.setEnabled(True)
+        tip = (
+            f"Gửi file tới @{cid}"
+            if is_dm
+            else "Gửi file tới tất cả người dùng đang online"
+        )
+        self.attach_button.setToolTip(tip)
+        self.header_send_file_btn.setToolTip(tip)
         self.message_model.set_messages(conv.messages)
         self._sync_feed_stack()
         self._scroll_to_bottom()
@@ -777,7 +802,24 @@ class MainWindow(QMainWindow):
     def _on_attach_clicked(self) -> None:
         cid = self.store.active_conv_id
         if cid == BROADCAST_CONV_ID:
+            peers = list(self.store.online_users)
+            if not peers:
+                self._show_error_banner(
+                    "Chưa có người dùng nào khác đang online. Hãy bấm Refresh để cập nhật danh sách."
+                )
+                return
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, f"Chọn file gửi tới tất cả ({len(peers)} người online)"
+            )
+            if not file_path:
+                return
+            self.controller.send_file_broadcast(peers, Path(file_path))
+            self._status_reset_timer.stop()
+            self.global_status_label.setText(
+                f"Đang gửi '{Path(file_path).name}' tới {len(peers)} người online..."
+            )
             return
+
         file_path, _ = QFileDialog.getOpenFileName(self, f"Chọn file gửi tới @{cid}")
         if not file_path:
             return
