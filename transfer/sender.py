@@ -249,11 +249,13 @@ class ClientFileTransferManager:
         send_fn: Callable[[dict[str, Any]], None],
         print_fn: Callable[[str], None],
         status_update_fn: Callable[[], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.username = username
         self.send_fn = send_fn
         self.print_fn = print_fn
         self.status_update_fn = status_update_fn
+        self.on_event = on_event
         self._active_transfers: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
@@ -312,19 +314,38 @@ class ClientFileTransferManager:
             except Exception:
                 pass
 
+    def _emit_event(self, payload: dict[str, Any]) -> None:
+        if self.on_event:
+            try:
+                self.on_event(payload)
+            except Exception:
+                pass
+
     def _send_frame(self, header: dict[str, Any], payload: bytes = b"") -> None:
         if header.get("type") == "FILE_INIT":
             session_id = header.get("session_id", "")
             if session_id:
+                filename = header.get("filename", "unnamed_file")
+                peer = header.get("receiver", "")
+                total = int(header.get("filesize", 0))
                 with self._lock:
                     self._active_transfers[session_id] = {
-                        "filename": header.get("filename", "unnamed_file"),
-                        "peer": header.get("receiver", ""),
+                        "filename": filename,
+                        "peer": peer,
                         "direction": "upload",
                         "current": 0,
-                        "total": int(header.get("filesize", 0)),
+                        "total": total,
                     }
                 self._trigger_update()
+                self._emit_event({
+                    "event": "started",
+                    "session_id": session_id,
+                    "direction": "upload",
+                    "peer": peer,
+                    "filename": filename,
+                    "current": 0,
+                    "total": total,
+                })
 
         message = dict(header)
         if payload:
@@ -382,6 +403,15 @@ class ClientFileTransferManager:
                         "total": filesize,
                     }
                 self._trigger_update()
+                self._emit_event({
+                    "event": "started",
+                    "session_id": session_id,
+                    "direction": "download",
+                    "peer": sender,
+                    "filename": filename,
+                    "current": 0,
+                    "total": filesize,
+                })
             self.receiver.handle_incoming_message(message, payload)
         elif msg_type in ("FILE_ACCEPT", "FILE_RESULT"):
             self.sender.handle_incoming_message(message, payload)
@@ -426,8 +456,19 @@ class ClientFileTransferManager:
             else:
                 info["current"] = current
                 info["total"] = total
+            direction = info["direction"]
+            peer = info.get("peer", "")
 
         self._trigger_update()
+        self._emit_event({
+            "event": "progress",
+            "session_id": session_id,
+            "direction": direction,
+            "peer": peer,
+            "filename": filename,
+            "current": current,
+            "total": total,
+        })
 
     def _on_complete(self, session_id: str, filename: str, msg: str) -> None:
         with self._lock:
@@ -435,6 +476,16 @@ class ClientFileTransferManager:
         self._trigger_update()
         peer = info.get("peer", "") if info else ""
         total = info.get("total", 0) if info else 0
+        self._emit_event({
+            "event": "completed",
+            "session_id": session_id,
+            "direction": "upload",
+            "peer": peer,
+            "filename": filename,
+            "current": total,
+            "total": total,
+            "saved_path": "",
+        })
         peer_str = f" tới '{peer}'" if peer else ""
         bar = _render_bar(100.0)
         size_str = _format_size(total)
@@ -446,6 +497,16 @@ class ClientFileTransferManager:
         self._trigger_update()
         peer = info.get("peer", "") if info else ""
         total = info.get("total", 0) if info else 0
+        self._emit_event({
+            "event": "completed",
+            "session_id": session_id,
+            "direction": "download",
+            "peer": peer,
+            "filename": filename,
+            "current": total,
+            "total": total,
+            "saved_path": saved_path,
+        })
         peer_str = f" từ '{peer}'" if peer else ""
         bar = _render_bar(100.0)
         size_str = _format_size(total)
@@ -455,6 +516,16 @@ class ClientFileTransferManager:
 
     def _on_error(self, session_id: str, filename: str, err: str) -> None:
         with self._lock:
-            self._active_transfers.pop(session_id, None)
+            info = self._active_transfers.pop(session_id, None)
         self._trigger_update()
+        direction = info.get("direction", "upload") if info else "upload"
+        peer = info.get("peer", "") if info else ""
+        self._emit_event({
+            "event": "failed",
+            "session_id": session_id,
+            "direction": direction,
+            "peer": peer,
+            "filename": filename,
+            "error": err,
+        })
         self.print_fn(f"[FILE ERROR] {filename}: {err}")

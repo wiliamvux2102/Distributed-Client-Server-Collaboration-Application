@@ -1,2 +1,4 @@
 # CLI terminal prompt dependency.
 prompt_toolkit>=3.0,<4
+# Desktop GUI dependency.
+PySide6>=6.7,<7

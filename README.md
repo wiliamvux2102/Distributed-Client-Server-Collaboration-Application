@@ -4,13 +4,13 @@
 
 ## Trạng thái chức năng
 
-- Đã hoàn thiện và tích hợp đầy đủ: UDP discovery/heartbeat, TCP framing bằng JSON, TLS, đăng nhập, danh sách online, chat riêng, chat chung, truyền file trọn luồng (`transfer/`) với kiểm tra toàn vẹn SHA-256 và giao diện CLI hiển thị thanh tiến trình thời gian thực.
+- Đã hoàn thiện và tích hợp đầy đủ: UDP discovery/heartbeat, TCP framing bằng JSON, TLS, đăng nhập, danh sách online, chat riêng, chat chung, truyền file trọn luồng (`transfer/`) với kiểm tra toàn vẹn SHA-256, giao diện CLI hiển thị thanh tiến trình thời gian thực và giao diện desktop GUI (`PySide6`).
 
 ## Yêu cầu
 
 - Python 3.12 trở lên.
 - Kết nối mạng cho TCP port `5000` và UDP port `5001`.
-- Mạng dùng thư viện chuẩn Python (`socket`, `ssl`, `threading`, `json`); CLI dùng `prompt_toolkit` để giữ prompt và dòng đang nhập ổn định khi có tin đến.
+- Mạng dùng thư viện chuẩn Python (`socket`, `ssl`, `threading`, `json`); CLI dùng `prompt_toolkit` để giữ prompt và dòng đang nhập ổn định khi có tin đến; Desktop GUI dùng `PySide6`.
 - Server cần khóa riêng TLS khớp với `certs/server-cert.pem`. Mặc định cấu hình tìm khóa tại `certs/private/server-key.pem`. Khóa riêng không được đưa vào Git và không có trong checkout sạch. Nhận khóa phát triển từ người quản lý chứng chỉ của nhóm hoặc cấu hình một bộ CA/chứng chỉ/khóa phát triển mới đồng bộ cho server và client trước khi chạy.
 
 ## Cài đặt
@@ -30,7 +30,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-Sau khi kích hoạt môi trường ảo, cài dependency của CLI:
+Sau khi kích hoạt môi trường ảo, cài toàn bộ dependency (cho CLI và GUI):
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -66,13 +66,21 @@ python -m infrastructure.server
 
 Trên macOS/Linux dùng `python3 -m infrastructure.server`.
 
-Mở một terminal khác cho mỗi client:
+Mở một terminal khác cho mỗi client (chọn **Desktop GUI** hoặc **CLI**):
+
+**Chạy Desktop GUI (PySide6):**
+
+```powershell
+python -m ui.gui
+```
+
+**Hoặc chạy CLI:**
 
 ```powershell
 python -m ui.cli
 ```
 
-Trên macOS/Linux dùng `python3 -m ui.cli`. Mỗi client cần một username duy nhất, dài 3–20 ký tự ASCII, chỉ gồm chữ, số và `_`.
+Trên macOS/Linux dùng `python3 -m ui.gui` hoặc `python3 -m ui.cli`. Mỗi client cần một username duy nhất, dài 3–20 ký tự ASCII, chỉ gồm chữ, số và `_`.
 
 Để thử trên hai máy trong cùng LAN hoặc 4G hotspot, chạy server trên một máy, cho phép TCP `5000` và UDP `5001` qua firewall (hoặc chuyển mạng sang Private), rồi chạy client trên các máy cùng mạng. Nếu môi trường mạng chặn UDP broadcast (như Wi-Fi trường học), CLI tự động hỗ trợ nhập IPv4 của server để kết nối trực tiếp.
 
@@ -120,6 +128,7 @@ File ZIP thành phẩm sẽ được lưu tại `dist/Distributed-Client-Server-
 - `infrastructure/`: server, kết nối client, TLS, UDP và session.
 - `chat/`: handler chat phía server và logic chat phía client.
 - `ui/cli.py`: lệnh, hiển thị CLI và thanh tiến trình truyền file thời gian thực.
+- `ui/gui/`: giao diện desktop PySide6 (Login, `#all`, DM, Online list, Transfer drawer).
 - `transfer/`: module truyền file trọn luồng (`sender.py`, `receiver.py`, `server_handler.py`, `integrity.py`).
 - `docs/protocol.md`: đặc tả bản tin và framing.
 - `docs/architecture.md`: thành phần, sequence diagram chat/truyền file và luồng xử lý.
