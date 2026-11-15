@@ -2,9 +2,13 @@
 
 Ứng dụng Python cho phép các client trong cùng mạng đăng nhập qua server, xem người dùng online, gửi tin riêng, chat chung và truyền file tin cậy. Server định tuyến tin nhắn và luồng chunk file qua TCP/TLS; UDP được dùng để tìm server và duy trì heartbeat.
 
-## Trạng thái chức năng
+## Tính năng chính
 
-- Đã hoàn thiện và tích hợp đầy đủ: UDP discovery/heartbeat, TCP framing bằng JSON, TLS, đăng nhập, danh sách online, chat riêng, chat chung, truyền file trọn luồng (`transfer/`) với kiểm tra toàn vẹn SHA-256, giao diện CLI hiển thị thanh tiến trình thời gian thực và giao diện desktop GUI (`PySide6`).
+- **Khám phá & duy trì phiên qua UDP:** Tự động tìm server qua UDP broadcast (`5001`), có nhập IPv4 thủ công dự phòng; duy trì session bằng UDP heartbeat ký HMAC-SHA256 kèm timestamp chống replay.
+- **Bảo mật & đóng gói bản tin:** Toàn bộ luồng TCP (`5000`) chạy trên TLS 1.2+ với xác minh CA/hostname, dùng framing JSON độ dài 4 byte.
+- **Chat thời gian thực:** Đăng nhập username duy nhất, xem danh sách online (tự làm mới trên GUI), chat chung (`#all` / `/all`) và nhắn riêng (`/msg` / DM).
+- **Truyền file tin cậy (`transfer/`):** Gửi file 1–1 hoặc tới tất cả người online (`#all` / `/sendfile all`), ghi tạm `.part`, kiểm tra kích thước và mã băm SHA-256 trước khi hoàn tất.
+- **Hai giao diện đồng bộ:** Terminal CLI (`prompt_toolkit`) và Desktop GUI (`PySide6`) dùng chung protocol và lõi xử lý.
 
 ## Yêu cầu
 
@@ -82,7 +86,7 @@ python -m ui.cli
 
 Trên macOS/Linux dùng `python3 -m ui.gui` hoặc `python3 -m ui.cli`. Mỗi client cần một username duy nhất, dài 3–20 ký tự ASCII, chỉ gồm chữ, số và `_`.
 
-Để thử trên hai máy trong cùng LAN hoặc 4G hotspot, chạy server trên một máy, cho phép TCP `5000` và UDP `5001` qua firewall (hoặc chuyển mạng sang Private), rồi chạy client trên các máy cùng mạng. Nếu môi trường mạng chặn UDP broadcast (như Wi-Fi trường học), CLI tự động hỗ trợ nhập IPv4 của server để kết nối trực tiếp.
+Để thử trên hai máy trong cùng LAN hoặc 4G hotspot, chạy server trên một máy, cho phép TCP `5000` và UDP `5001` qua firewall (hoặc chuyển mạng sang Private), rồi chạy client trên các máy cùng mạng. Nếu môi trường mạng chặn UDP broadcast (như Wi-Fi trường học), cả CLI và Desktop GUI đều hỗ trợ nhập IPv4 của server để kết nối trực tiếp.
 
 ## Lệnh CLI
 
@@ -101,12 +105,12 @@ Server và CLI tự cấu hình console UTF-8 để hiển thị tiếng Việt 
 ### Hướng dẫn truyền file (`/sendfile`)
 
 - Cú pháp: `/sendfile <username|all> <đường_dẫn_file>` (hỗ trợ cả đường dẫn có khoảng trắng hoặc bọc trong dấu ngoặc kép `"..."`). Dùng `all` (hoặc `#all`) để gửi file tới tất cả người dùng đang online; trên Desktop GUI, có thể gửi file ngay trong kênh `#all` (Chat chung) hoặc trong tin nhắn riêng.
-- Trong lúc truyền, thanh tiến trình `[=====>---------] %` hiển thị trực tiếp theo thời gian thực ngay trên dòng nhập lệnh `Bạn> ` ở cả máy gửi và máy nhận mà không làm trôi lịch sử chat.
+- Trong lúc truyền, CLI hiển thị thanh tiến trình `[=====>---------] %` trực tiếp ngay trên dòng nhập lệnh `Bạn> ` ở cả máy gửi và máy nhận mà không làm trôi lịch sử chat; trên Desktop GUI, tiến trình hiển thị ở panel **Truyền file** góc dưới bên trái.
 - File nhận được ghi tạm vào `downloads/.<session_id>_<filename>.part`, kiểm tra kích thước và mã băm **SHA-256** trước khi đổi tên thành file hoàn chỉnh trong thư mục `downloads/` (tự động đánh số `file (1).ext` nếu trùng tên). Nếu mất kết nối hoặc sai mã băm, file `.part` sẽ tự động được dọn sạch.
 
 ## Kiểm thử tự động (Unit Tests)
 
-Chạy toàn bộ bộ test suite (91 tests) bao phủ hạ tầng, chat, truyền file và PySide6 GUI:
+Chạy toàn bộ bộ test suite (97 tests) bao phủ hạ tầng, chat, truyền file và PySide6 GUI:
 
 ```powershell
 python -m unittest discover -s tests -t . -v
@@ -114,13 +118,13 @@ python -m unittest discover -s tests -t . -v
 
 ## Đóng gói nộp bài (Packaging)
 
-Tạo file ZIP nộp bài chuẩn quy cách (tự động loại trừ khóa riêng CA `dev-ca-key.pem`, `.venv`, cache và file tạm):
+Tạo file ZIP nộp bài (tự động loại trừ khóa riêng CA `dev-ca-key.pem`, `.venv`, cache và file tạm):
 
 ```powershell
 python scripts/package_submission.py
 ```
 
-File ZIP thành phẩm sẽ được lưu tại `dist/Distributed-Client-Server-Collaboration-Application.zip`.
+File ZIP được lưu tại `dist/Distributed-Client-Server-Collaboration-Application.zip`.
 
 ## Cấu trúc liên quan
 
@@ -135,6 +139,6 @@ File ZIP thành phẩm sẽ được lưu tại `dist/Distributed-Client-Server-
 - `docs/diagrams/`: ảnh biểu đồ sequence diagram (`chat_sequence.png`, `file_transfer_sequence.png`).
 - `docs/test_results.md`: kết quả kiểm thử hạ tầng, chat, truyền file và GUI.
 
-## Tài liệu báo cáo
+## Biểu đồ thiết kế
 
-Báo cáo PDF cuối tổng hợp kiến trúc, đặc tả protocol, sequence diagram chat/truyền file và các vấn đề kỹ thuật đã giải quyết. Các biểu đồ tuần tự đã được xuất ảnh sẵn trong `docs/diagrams/` và nhúng trực tiếp vào `docs/architecture.md`.
+Các biểu đồ tuần tự (sequence diagram) cho chat và truyền file được lưu trong `docs/diagrams/` và nhúng trực tiếp trong `docs/architecture.md`.

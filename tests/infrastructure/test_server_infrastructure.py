@@ -135,6 +135,72 @@ class UserRegistryTests(unittest.TestCase):
         self.assertNotIn("alice", self.registry.list_online())
         self.assertIn("bob", self.registry.list_online())
 
+    def test_refresh_heartbeat_signed_hmac_and_anti_replay(self) -> None:
+        from infrastructure.user_registry import compute_heartbeat_hmac
+
+        self.registry.register("alice", self.conn1, ("192.168.1.10", 50000), self.lock1, "secret_token")
+        now_ms = int(time.time() * 1000)
+        sig = compute_heartbeat_hmac("secret_token", "alice", now_ms)
+
+        # Valid signed heartbeat succeeds
+        self.assertTrue(self.registry.refresh_heartbeat_signed("alice", now_ms, sig, "192.168.1.10"))
+
+        # Exact replay with same timestamp fails
+        self.assertFalse(self.registry.refresh_heartbeat_signed("alice", now_ms, sig, "192.168.1.10"))
+
+        # Wrong signature fails
+        self.assertFalse(self.registry.refresh_heartbeat_signed("alice", now_ms + 1, "bad_sig", "192.168.1.10"))
+
+        # Wrong source IP fails
+        sig2 = compute_heartbeat_hmac("secret_token", "alice", now_ms + 2)
+        self.assertFalse(self.registry.refresh_heartbeat_signed("alice", now_ms + 2, sig2, "10.0.0.1"))
+
+        # Expired timestamp outside max_skew_seconds fails
+        old_ms = now_ms - 60_000
+        old_sig = compute_heartbeat_hmac("secret_token", "alice", old_ms)
+        self.assertFalse(self.registry.refresh_heartbeat_signed("alice", old_ms, old_sig, "192.168.1.10"))
+
+    def test_send_heartbeats_sends_hmac_without_plaintext_token(self) -> None:
+        import json
+        from unittest.mock import MagicMock, patch
+        from infrastructure import client_connection
+        from infrastructure.user_registry import compute_heartbeat_hmac
+
+        sent_packets: list[tuple[bytes, tuple[str, int]]] = []
+        stop_event = threading.Event()
+
+        mock_sock = MagicMock()
+
+        def fake_sendto(data: bytes, addr: tuple[str, int]) -> int:
+            sent_packets.append((data, addr))
+            stop_event.set()
+            return len(data)
+
+        mock_sock.sendto.side_effect = fake_sendto
+        mock_sock.__enter__.return_value = mock_sock
+        mock_sock.__exit__.return_value = False
+
+        with patch("infrastructure.client_connection.socket.socket", return_value=mock_sock):
+            client_connection.send_heartbeats(
+                "127.0.0.1",
+                "alice",
+                "top_secret_tok",
+                stop_event,
+                lambda msg: None,
+            )
+
+        self.assertEqual(len(sent_packets), 1)
+        data, addr = sent_packets[0]
+        self.assertEqual(addr[0], "127.0.0.1")
+        payload = json.loads(data.decode("utf-8"))
+        self.assertNotIn("token", payload)
+        self.assertEqual(payload["username"], "alice")
+        self.assertIsInstance(payload["ts"], int)
+        self.assertEqual(
+            payload["sig"],
+            compute_heartbeat_hmac("top_secret_tok", "alice", payload["ts"]),
+        )
+
 
 class AuthenticationTests(unittest.TestCase):
     """Test username normalization and input sanitation rules."""

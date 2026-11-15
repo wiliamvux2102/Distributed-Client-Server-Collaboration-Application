@@ -184,6 +184,9 @@ class MainWindow(QMainWindow):
         self._status_reset_timer.timeout.connect(
             lambda: self.global_status_label.setText("Đã kết nối TLS")
         )
+        self._online_poll_timer = QTimer(self)
+        self._online_poll_timer.setInterval(5000)
+        self._online_poll_timer.timeout.connect(self.controller.refresh_online_users)
 
         self.setStyleSheet(build_stylesheet())
         self._build_ui()
@@ -599,6 +602,7 @@ class MainWindow(QMainWindow):
         self._refresh_sidebar()
         self._load_active_conversation()
         self.controller.refresh_online_users()
+        self._online_poll_timer.start()
 
     def _on_connect_failed(self, event: ErrorEvent) -> None:
         if event.gen != self.controller.current_gen:
@@ -608,6 +612,9 @@ class MainWindow(QMainWindow):
     def _on_disconnected(self, event: ErrorEvent) -> None:
         if event.gen != self._active_gen and event.gen != self.controller.current_gen:
             return
+        self._status_reset_timer.stop()
+        self._online_poll_timer.stop()
+        self._clear_transfer_cards()
         self.stack.setCurrentWidget(self.login_page)
         if event.message:
             self._show_login_error(event.message)
@@ -845,5 +852,7 @@ class MainWindow(QMainWindow):
             QApplication.clipboard().setText(text)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._status_reset_timer.stop()
+        self._online_poll_timer.stop()
         self.controller.shutdown_sync(timeout=2.5)
         super().closeEvent(event)

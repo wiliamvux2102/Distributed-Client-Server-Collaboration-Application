@@ -117,13 +117,32 @@ class FileReceiver:
         sha256 = header.get("sha256", "")
         total_chunks = int(header.get("total_chunks", 0))
 
-        if not session_id:
+        if (
+            not session_id
+            or not isinstance(session_id, str)
+            or not session_id.strip()
+            or "/" in session_id
+            or "\\" in session_id
+            or ".." in session_id
+            or ":" in session_id
+            or "\x00" in session_id
+        ):
             return
 
-        # Sanitize filename against directory traversal attacks
-        safe_name = Path(filename).name
+        # Sanitize filename against directory traversal attacks (POSIX & Windows separators)
+        raw_name = str(filename).replace("\\", "/") if isinstance(filename, str) else ""
+        safe_name = Path(raw_name).name.strip()
+        if not safe_name or safe_name in {".", ".."} or ":" in safe_name or "\x00" in safe_name:
+            safe_name = "unnamed_file"
         temp_filename = f".{session_id}_{safe_name}.part"
         temp_path = self.download_dir / temp_filename
+        try:
+            if not temp_path.resolve().is_relative_to(self.download_dir.resolve()):
+                if self.on_error:
+                    self.on_error(session_id, safe_name, "Unsafe temporary download path rejected.")
+                return
+        except Exception:
+            return
 
         with self._lock:
             if session_id in self._sessions:
@@ -292,7 +311,14 @@ class FileReceiver:
 
     def _resolve_final_path(self, filename: str) -> Path:
         """Avoid overwriting existing files by appending incremental counters (e.g. file (1).txt)."""
-        candidate = self.download_dir / filename
+        raw_name = str(filename).replace("\\", "/") if isinstance(filename, str) else ""
+        safe_name = Path(raw_name).name.strip()
+        if not safe_name or safe_name in {".", ".."} or ":" in safe_name or "\x00" in safe_name:
+            safe_name = "unnamed_file"
+        base_dir = self.download_dir.resolve()
+        candidate = self.download_dir / safe_name
+        if not candidate.resolve().is_relative_to(base_dir):
+            candidate = self.download_dir / "unnamed_file"
         if not candidate.exists():
             return candidate
 

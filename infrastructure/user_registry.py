@@ -1,8 +1,16 @@
+import hashlib
+import hmac
 import socket
 import threading
 from dataclasses import dataclass, field
 import time
 import secrets
+
+
+def compute_heartbeat_hmac(token: str, username: str, timestamp_ms: int) -> str:
+    """Compute HMAC-SHA256 signature for a UDP heartbeat without exposing the token."""
+    payload = f"{username}:{timestamp_ms}".encode("utf-8")
+    return hmac.new(token.encode("utf-8"), payload, hashlib.sha256).hexdigest()
 
 
 @dataclass
@@ -12,6 +20,7 @@ class UserSession:
     heartbeat_token: str
     send_lock: threading.Lock = field(default_factory=threading.Lock)
     last_heartbeat: float = field(default_factory=time.monotonic)
+    last_heartbeat_ts: int = 0
     
 class UserRegistry:
     def __init__(self) -> None:
@@ -32,6 +41,34 @@ class UserRegistry:
                     return True
 
         return False
+
+    def refresh_heartbeat_signed(
+        self,
+        username: str,
+        timestamp_ms: int,
+        signature: str,
+        source_ip: str,
+        max_skew_seconds: float = 30.0,
+    ) -> bool:
+        """Verify HMAC-SHA256 signed UDP heartbeat with timestamp window and anti-replay guard."""
+        now_ms = int(time.time() * 1000)
+        if abs(now_ms - timestamp_ms) > int(max_skew_seconds * 1000):
+            return False
+
+        with self._lock:
+            session = self._users.get(username)
+            if session is None:
+                return False
+            if session.address[0] != source_ip:
+                return False
+            if timestamp_ms <= session.last_heartbeat_ts:
+                return False
+            expected = compute_heartbeat_hmac(session.heartbeat_token, username, timestamp_ms)
+            if not secrets.compare_digest(expected, signature):
+                return False
+            session.last_heartbeat = time.monotonic()
+            session.last_heartbeat_ts = timestamp_ms
+            return True
 
 
     def remove_stale(self, timeout_seconds: float):

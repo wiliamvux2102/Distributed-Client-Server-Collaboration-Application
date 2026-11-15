@@ -328,6 +328,33 @@ class GuiControllerAndWindowTests(unittest.TestCase):
         finally:
             tmp_path.unlink(missing_ok=True)
 
+    def test_unexpected_disconnect_and_bye_close_session_and_cleanup_ft(self) -> None:
+        ctrl = SessionController()
+        mock_session = Mock()
+        mock_ft = Mock()
+        ctrl._state = ConnectionState.CONNECTED
+        ctrl._session_gen = 7
+        ctrl._session = mock_session
+        ctrl._ft_manager = mock_ft
+        ctrl._progress_last_emit["s1"] = 1.0
+
+        ctrl._finalize_unexpected_disconnect(7, "Dropped")
+        mock_ft.cleanup.assert_called_once_with("Connection lost")
+        mock_session.close.assert_called_once()
+        self.assertEqual(ctrl._progress_last_emit, {})
+
+        # Verify _on_server_bye also closes session and cleans up ft
+        mock_session_2 = Mock()
+        mock_ft_2 = Mock()
+        ctrl._state = ConnectionState.CONNECTED
+        ctrl._session_gen = 8
+        ctrl._session = mock_session_2
+        ctrl._ft_manager = mock_ft_2
+        ctrl._on_server_bye(8, "Server shutdown")
+        mock_ft_2.cleanup.assert_called_once_with("Server shutdown")
+        mock_session_2.close.assert_called_once()
+        ctrl.shutdown_sync(timeout=0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

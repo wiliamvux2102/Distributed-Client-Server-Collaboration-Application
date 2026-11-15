@@ -287,13 +287,20 @@ class SessionController:
                 return
             self._state = ConnectionState.DISCONNECTED
             ft = self._ft_manager
+            session = self._session
             self._ft_manager = None
             self._session = None
             self._chat = None
+            self._progress_last_emit.clear()
 
         if ft is not None:
             try:
                 ft.cleanup("Connection lost")
+            except Exception:
+                pass
+        if session is not None:
+            try:
+                session.close()
             except Exception:
                 pass
         self.bridge.state_changed.emit(ConnectionState.DISCONNECTED.value)
@@ -304,13 +311,20 @@ class SessionController:
             if gen != self._session_gen:
                 return
             ft = self._ft_manager
+            session = self._session
             self._ft_manager = None
             self._session = None
             self._chat = None
             self._state = ConnectionState.DISCONNECTED
+            self._progress_last_emit.clear()
         if ft is not None:
             try:
                 ft.cleanup(reason)
+            except Exception:
+                pass
+        if session is not None:
+            try:
+                session.close()
             except Exception:
                 pass
         self.bridge.state_changed.emit(ConnectionState.DISCONNECTED.value)
@@ -488,6 +502,7 @@ class SessionController:
             with self._lock:
                 if gen == self._session_gen:
                     self._state = ConnectionState.DISCONNECTED
+                    self._progress_last_emit.clear()
             self.bridge.state_changed.emit(ConnectionState.DISCONNECTED.value)
             self.bridge.disconnected.emit(ErrorEvent(gen=gen, message=reason))
 
@@ -501,6 +516,7 @@ class SessionController:
             self._chat = None
             self._ft_manager = None
             self._state = ConnectionState.DISCONNECTED
+            self._progress_last_emit.clear()
 
         done = threading.Event()
 

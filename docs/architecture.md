@@ -6,7 +6,8 @@
 
 ## Thành phần
 
-- **CLI (`ui/cli.py`)** đọc lệnh, hiển thị tin đến, danh sách online, trạng thái gửi và thanh tiến trình truyền file thời gian thực ngay trên dòng nhập lệnh. CLI không tự đóng frame TCP.
+- **Desktop GUI (`ui/gui/`)** cung cấp giao diện đồ họa PySide6 gồm `MainWindow` (`main_window.py`), bộ điều phối bất đồng bộ `SessionController` + `GuiSessionBridge` (`controller.py`) dùng Qt Signal/Slot và bộ đếm thế hệ `session_gen` để lọc callback phiên cũ, cùng `ChatSessionStore` / `MessageListModel` (`models.py`) quản lý kênh `#all`, hội thoại riêng (DM), bộ đếm chưa đọc, tự động làm mới danh sách online định kỳ (`QTimer` 5 giây) và ngăn kéo tiến trình truyền file thời gian thực.
+- **CLI (`ui/cli.py`)** đọc lệnh (`prompt_toolkit`), hiển thị tin đến, danh sách online, trạng thái gửi và thanh tiến trình truyền file thời gian thực ngay trên dòng nhập lệnh. CLI và GUI dùng chung toàn bộ tầng hạ tầng, chat và truyền file bên dưới.
 - **Chat client (`chat/client_chat.py`)** tạo `DIRECT_MESSAGE`/`BROADCAST_MESSAGE`, kiểm tra nội dung trước khi gửi, và chuyển phản hồi chat đến callback giao diện.
 - **Client session (`infrastructure/client_connection.py`)** dò server qua UDP, thiết lập TCP/TLS, đăng nhập, gửi bản tin có khóa, nhận bản tin ở một luồng duy nhất và gửi heartbeat UDP.
 - **TCP listener và worker (`infrastructure/server.py`)** nhận kết nối đa client, hoàn tất TLS, xác thực LOGIN và dispatch request của session đã đăng nhập.
@@ -15,27 +16,35 @@
 - **UserRegistry (`infrastructure/user_registry.py`)** lưu username, socket, địa chỉ, heartbeat token và send lock cho mỗi session online.
 - **Common utilities (`common/`)** cung cấp protocol framing JSON 4 byte và cấu hình console UTF-8 cho server/CLI.
 - **TLS (`infrastructure/security.py`)** dùng TLS 1.2 trở lên. Client xác minh CA và tên server `collab-server.local`.
-- **Transfer (`transfer/`)** gồm `sender.py` (chia chunk 64 KB, luồng gửi nền, quản lý tiến trình CLI), `receiver.py` (nhận chunk vào file tạm `.part`, chống Path Traversal, đổi tên nguyên tử), `server_handler.py` (quản lý phiên truyền file và chuyển tiếp streaming qua server) và `integrity.py` (kiểm tra kích thước và băm SHA-256).
+- **Transfer (`transfer/`)** gồm `sender.py` (chia chunk 64 KB, luồng gửi nền, quản lý tiến trình CLI/GUI), `receiver.py` (nhận chunk vào file tạm `.part`, chống Path Traversal trên cả tên file và `session_id`, đổi tên nguyên tử), `server_handler.py` (quản lý phiên truyền file và chuyển tiếp streaming qua server) và `integrity.py` (kiểm tra kích thước và băm SHA-256). Hỗ trợ cả gửi file 1–1 và gửi file broadcast (`#all` trên GUI / `/sendfile all` trên CLI) theo cơ chế client-side fan-out.
 
 ## Sơ đồ thành phần
 
 ```mermaid
 flowchart LR
-    UI[ui.cli<br/>commands and display]
-    CHATC[chat.client_chat<br/>build requests and map events]
-    SESSION[ClientSession<br/>TLS TCP send lock and receiver]
-    HB[UDP heartbeat sender]
-    DISC[UDP discovery client]
-    UDP[Server UDP service]
-    TCP[TCP listener]
-    WORK[Per-client worker<br/>TLS and authentication]
-    DISP[MessageDispatcher]
-    CHAT[chat.server_handler]
-    REG[UserRegistry]
+    CLI["ui.cli<br/>Terminal CLI"]
+    GUI["ui.gui<br/>MainWindow & SessionController"]
+    CHATC["chat.client_chat<br/>build requests and map events"]
+    FTC["transfer.ClientFileTransferManager<br/>FileSender & FileReceiver"]
+    SESSION["ClientSession<br/>TLS TCP send lock and receiver"]
+    HB["UDP heartbeat sender"]
+    DISC["UDP discovery client"]
+    UDP["Server UDP service"]
+    TCP["TCP listener"]
+    WORK["Per-client worker<br/>TLS and authentication"]
+    DISP["MessageDispatcher"]
+    CHAT["chat.server_handler"]
+    FTS["transfer.server_handler"]
+    REG["UserRegistry"]
 
-    UI --> CHATC
-    UI --> SESSION
+    CLI --> CHATC
+    CLI --> FTC
+    CLI --> SESSION
+    GUI --> CHATC
+    GUI --> FTC
+    GUI --> SESSION
     CHATC --> SESSION
+    FTC --> SESSION
     DISC -- UDP_DISCOVER --> UDP
     UDP -- UDP_DISCOVERY_RESPONSE --> DISC
     HB -- UDP_HEARTBEAT --> UDP
@@ -43,11 +52,17 @@ flowchart LR
     TCP --> WORK
     WORK --> DISP
     DISP --> CHAT
+    DISP --> FTS
     CHAT <--> REG
+    FTS <--> REG
     WORK <--> REG
     REG -- routed delivery --> SESSION
     SESSION -- callbacks --> CHATC
-    CHATC -- UI callbacks --> UI
+    SESSION -- callbacks --> FTC
+    CHATC -- UI callbacks / Qt Signals --> CLI
+    CHATC -- UI callbacks / Qt Signals --> GUI
+    FTC -- UI callbacks / Qt Signals --> CLI
+    FTC -- UI callbacks / Qt Signals --> GUI
 ```
 
 ## Luồng kết nối và đăng nhập
@@ -84,12 +99,13 @@ flowchart LR
 
 - Chỉ `_receive_loop()` đọc socket TCP sau đăng nhập; các module khác đăng ký handler theo `type`.
 - `ClientSession.send()` giữ send lock chung trong lúc ghi frame. Chat và các module tích hợp sau này dùng cùng API để tránh frame bị xen byte.
-- Callback được gọi trên luồng nhận. CLI dùng `_print_async()` để in sự kiện nền và hiện lại prompt khi đang nhập.
+- Callback được gọi trên luồng nhận. CLI dùng `_print_async()` (kết hợp `prompt_toolkit` `patch_stdout()`) để in sự kiện nền và hiện lại prompt khi đang nhập; Desktop GUI dùng `GuiSessionBridge` (Qt Signals) kết hợp bộ đếm `session_gen` để cập nhật giao diện an toàn trên main thread và bỏ qua các sự kiện trễ từ phiên đã đóng.
 - Heartbeat chạy độc lập trên UDP; discovery và heartbeat không dùng framing TCP.
 
 ## Đăng xuất và dọn session
 
-- CLI gọi `ClientSession.logout()`, gửi `QUIT` và chờ `BYE`.
+- CLI gọi `ClientSession.logout()` (hoặc GUI gọi `SessionController.disconnect()` / `shutdown_sync()` khi đóng cửa sổ), dọn dẹp các phiên truyền file đang mở (`ft_manager.cleanup()`), gửi `QUIT` và chờ `BYE`.
+- Khi mất kết nối đột ngột hoặc nhận `BYE` từ server, `SessionController` tự động gọi `ft_manager.cleanup()`, đóng `ClientSession.close()`, dừng các `QTimer` làm mới danh sách online/trạng thái và đưa GUI về màn hình đăng nhập.
 - Server trả `BYE`, kết thúc worker và gọi `UserRegistry.remove_if_same()` để xóa session.
 - `ClientSession.close()` dừng receiver/heartbeat và đóng TLS socket, kể cả khi kết nối gặp lỗi.
 - Server cũng xóa session khi TCP đóng hoặc heartbeat quá hạn. Cấu hình hiện tại gửi heartbeat mỗi 10 giây và coi session stale sau 35 giây.
@@ -135,4 +151,4 @@ stateDiagram-v2
 ## Giới hạn hiện tại
 
 - `DELIVERY_STATUS.ok` đối với tin nhắn chat xác nhận server gửi được frame tới socket đích; với truyền file, `FILE_RESULT (OK)` xác nhận đầu nhận đã lưu và kiểm tra SHA-256 thành công.
-- TLS bảo vệ toàn bộ kết nối TCP (bao gồm đăng nhập, chat và truyền file). UDP discovery/heartbeat không được TLS bảo vệ; heartbeat token hiện nằm trong datagram UDP plaintext.
+- TLS bảo vệ toàn bộ kết nối TCP (bao gồm đăng nhập, chat và truyền file). UDP discovery không mang dữ liệu nhạy cảm; UDP heartbeat sử dụng chữ ký `HMAC-SHA256(heartbeat_token, username:ts)` kèm dấu thời gian đơn điệu (`ts`) để xác thực và chống replay mà không phát raw token qua mạng.

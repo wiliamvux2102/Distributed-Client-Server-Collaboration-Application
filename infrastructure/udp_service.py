@@ -101,11 +101,20 @@ def serve_discovery(stop_event: threading.Event) -> None:
             request_type = request.get("type")
 
             if request_type == mt.UDP_HEARTBEAT:
-                token = request.get("token")
+                username = request.get("username")
+                ts = request.get("ts")
+                sig = request.get("sig")
 
-                if isinstance(token, str):
-                    user_registry.refresh_heartbeat(
-                        token,
+                if (
+                    isinstance(username, str)
+                    and isinstance(ts, int)
+                    and not isinstance(ts, bool)
+                    and isinstance(sig, str)
+                ):
+                    user_registry.refresh_heartbeat_signed(
+                        username,
+                        ts,
+                        sig,
                         client_address[0],
                     )
 

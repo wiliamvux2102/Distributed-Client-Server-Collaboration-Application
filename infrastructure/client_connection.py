@@ -13,6 +13,7 @@ from infrastructure.security import (
     TLS_SERVER_NAME,
     create_client_context,
 )
+from infrastructure.user_registry import compute_heartbeat_hmac
 from common.app_config import CONFIG
 
 SERVER_CONFIG = CONFIG["server"]
@@ -173,19 +174,23 @@ def connect_tls(server_host: str, server_port: int) -> ssl.SSLSocket:
 
 def send_heartbeats(
     server_host: str,
+    username: str,
     token: str,
     stop_event: threading.Event,
     on_error: ErrorHandler,
 ) -> None:
-    """Gửi heartbeat UDP định kỳ trong lúc client còn hoạt động."""
-
-    heartbeat = json.dumps({
-        "type": mt.UDP_HEARTBEAT,
-        "token": token,
-    }).encode("utf-8")
+    """Gửi heartbeat UDP đã ký HMAC-SHA256 định kỳ trong lúc client còn hoạt động."""
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
         while not stop_event.is_set():
+            ts = int(time.time() * 1000)
+            sig = compute_heartbeat_hmac(token, username, ts)
+            heartbeat = json.dumps({
+                "type": mt.UDP_HEARTBEAT,
+                "username": username,
+                "ts": ts,
+                "sig": sig,
+            }).encode("utf-8")
             try:
                 udp_socket.sendto(
                     heartbeat,
@@ -324,6 +329,7 @@ class ClientSession:
             target=send_heartbeats,
             args=(
                 self.server_host,
+                self.username,
                 self._heartbeat_token,
                 self._stop_event,
                 self._on_error,

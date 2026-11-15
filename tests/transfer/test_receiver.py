@@ -283,6 +283,58 @@ class TestReceiver(unittest.TestCase):
         self.assertFalse(stale_file_1.exists())
         self.assertFalse(stale_file_2.exists())
 
+    def test_file_init_rejects_traversal_in_session_id(self) -> None:
+        """Unsafe session_id containing path separators or '..' must be rejected."""
+        for bad_sid in ("../escape", "sub/sid", "sub\\sid", "bad:sid"):
+            self.receiver.handle_incoming_message(
+                {
+                    "type": "FILE_INIT",
+                    "session_id": bad_sid,
+                    "sender": "attacker",
+                    "filename": "normal.txt",
+                    "filesize": 10,
+                    "sha256": "0" * 64,
+                    "total_chunks": 1,
+                },
+                b"",
+            )
+        self.assertEqual(len(self.sent_frames), 0)
+        self.assertEqual(len(self.receiver._sessions), 0)
+
+    def test_file_init_sanitizes_backslash_and_dot_filenames(self) -> None:
+        """Backslash paths and dot/empty filenames must resolve safely inside download_dir."""
+        self.receiver.handle_incoming_message(
+            {
+                "type": "FILE_INIT",
+                "session_id": "sid_bs",
+                "sender": "attacker",
+                "filename": "..\\..\\win.ini",
+                "filesize": 10,
+                "sha256": "0" * 64,
+                "total_chunks": 1,
+            },
+            b"",
+        )
+        self.assertTrue((self.download_dir / ".sid_bs_win.ini.part").exists())
+        self.receiver.handle_incoming_message({"type": "FILE_ERROR", "session_id": "sid_bs"}, b"")
+
+        for idx, dot_name in enumerate(("..", ".", "")):
+            sid = f"sid_dot_{idx}"
+            self.receiver.handle_incoming_message(
+                {
+                    "type": "FILE_INIT",
+                    "session_id": sid,
+                    "sender": "attacker",
+                    "filename": dot_name,
+                    "filesize": 10,
+                    "sha256": "0" * 64,
+                    "total_chunks": 1,
+                },
+                b"",
+            )
+            self.assertTrue((self.download_dir / f".{sid}_unnamed_file.part").exists())
+            self.receiver.handle_incoming_message({"type": "FILE_ERROR", "session_id": sid}, b"")
+
 
 if __name__ == "__main__":
     unittest.main()

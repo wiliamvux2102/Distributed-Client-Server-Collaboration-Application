@@ -311,6 +311,41 @@ class TestServerHandler(unittest.TestCase):
         for msg_type in ("FILE_INIT", "FILE_ACCEPT", "FILE_CHUNK", "FILE_END", "FILE_RESULT", "FILE_ERROR"):
             self.assertIn(msg_type, dispatcher.handlers)
 
+    def test_handle_init_rejects_slashes_colons_and_unsafe_session_id(self) -> None:
+        for bad_filename in ("/etc/passwd", "sub/file.txt", "C:\\evil.exe", ".", ""):
+            self.sent_messages.clear()
+            self.handler.handle_message(
+                "alice",
+                {
+                    "type": "FILE_INIT",
+                    "session_id": "sid_ok",
+                    "sender": "alice",
+                    "receiver": "bob",
+                    "filename": bad_filename,
+                    "filesize": 10,
+                },
+                b"",
+            )
+            self.assertEqual(len(self.sent_messages), 1)
+            self.assertEqual(self.sent_messages[0][1]["code"], "ERR_INVALID_METADATA")
+
+        for bad_sid in ("../sid", "a/b", "a\\b", "a:b"):
+            self.sent_messages.clear()
+            self.handler.handle_message(
+                "alice",
+                {
+                    "type": "FILE_INIT",
+                    "session_id": bad_sid,
+                    "sender": "alice",
+                    "receiver": "bob",
+                    "filename": "ok.txt",
+                    "filesize": 10,
+                },
+                b"",
+            )
+            self.assertEqual(len(self.sent_messages), 1)
+            self.assertEqual(self.sent_messages[0][1]["code"], "ERR_INVALID_METADATA")
+
 
 if __name__ == "__main__":
     unittest.main()

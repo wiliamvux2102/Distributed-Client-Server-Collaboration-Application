@@ -64,7 +64,16 @@ class FileTransferServerHandler:
         filename = header.get("filename", "unknown")
 
         # Validation: session_id and receiver
-        if not session_id or not isinstance(session_id, str):
+        if (
+            not session_id
+            or not isinstance(session_id, str)
+            or not session_id.strip()
+            or "/" in session_id
+            or "\\" in session_id
+            or ".." in session_id
+            or ":" in session_id
+            or "\x00" in session_id
+        ):
             self.send_to_user(
                 sender_user,
                 {
@@ -90,8 +99,18 @@ class FileTransferServerHandler:
             )
             return
 
-        # Validation: filename (check against path traversal)
-        if not filename or not isinstance(filename, str) or ".." in filename:
+        # Validation: filename (check against path traversal and directory separators)
+        if (
+            not filename
+            or not isinstance(filename, str)
+            or not filename.strip()
+            or filename.strip() in {".", ".."}
+            or ".." in filename
+            or "/" in filename
+            or "\\" in filename
+            or ":" in filename
+            or "\x00" in filename
+        ):
             self.send_to_user(
                 sender_user,
                 {
