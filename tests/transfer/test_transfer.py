@@ -1,5 +1,5 @@
 """
-Integration tests for file transfer covering the 5 mandatory scenarios from PLAN_M3.md.
+Integration tests for end-to-end file transfer (empty, small, large, binary, corruption, and disconnect).
 """
 
 from __future__ import annotations

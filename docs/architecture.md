@@ -98,7 +98,7 @@ flowchart LR
 ## Luồng nhận và đồng thời
 
 - Chỉ `_receive_loop()` đọc socket TCP sau đăng nhập; các module khác đăng ký handler theo `type`.
-- `ClientSession.send()` giữ send lock chung trong lúc ghi frame. Chat và các module tích hợp sau này dùng cùng API để tránh frame bị xen byte.
+- `ClientSession.send()` giữ send lock chung trong lúc ghi frame. Các module chat và truyền file dùng cùng API này để tránh frame bị xen byte.
 - Callback được gọi trên luồng nhận. CLI dùng `_print_async()` (kết hợp `prompt_toolkit` `patch_stdout()`) để in sự kiện nền và hiện lại prompt khi đang nhập; Desktop GUI dùng `GuiSessionBridge` (Qt Signals) kết hợp bộ đếm `session_gen` để cập nhật giao diện an toàn trên main thread và bỏ qua các sự kiện trễ từ phiên đã đóng.
 - Heartbeat chạy độc lập trên UDP; discovery và heartbeat không dùng framing TCP.
 
@@ -138,7 +138,7 @@ stateDiagram-v2
 
 1. CLI nhận lệnh `/sendfile <username> <filepath>` và gọi `ClientFileTransferManager.send_file()`.
 2. `FileSender` trích xuất metadata (`filename`, `filesize`, `sha256`, `chunk_size=65536`, `total_chunks`), sinh `session_id` (UUID) và gửi `FILE_INIT`.
-3. `FileTransferServerHandler` xác thực metadata (kiểm tra kiểu số `filesize`, chống Path Traversal ở `filename`, kiểm tra tính nhất quán chunks), kiểm tra chống trùng `session_id`, xác thực người gửi từ `context.username`, kiểm tra người nhận đang online, khởi tạo phiên với trạng thái `INIT` vào `_active_sessions` và chuyển tiếp `FILE_INIT` tới người nhận.
+3. `FileTransferServerHandler` xác thực metadata (kiểm tra kiểu số không âm của `filesize`, giá trị hợp lệ của `chunk_size`/`total_chunks` nếu có, chống Path Traversal ở `filename` và `session_id`), kiểm tra chống trùng `session_id`, xác thực người gửi từ `context.username`, kiểm tra người nhận đang online, khởi tạo phiên với trạng thái `INIT` vào `_active_sessions` và chuyển tiếp `FILE_INIT` tới người nhận.
 4. `FileReceiver` bên nhận tạo file tạm `.{session_id}_{safe_filename}.part` trong thư mục `downloads/` (có cơ chế khóa file chống xóa nhầm khi chạy đa client) và phản hồi `FILE_ACCEPT` (nếu file rỗng `0 byte` thì hoàn tất ngay).
 5. Server kiểm tra vai trò người gửi (bắt buộc từ receiver) và chuyển trạng thái phiên từ `INIT` sang `ACCEPTED`. Khi nhận `FILE_ACCEPT`, `FileSender` khởi chạy luồng nền `_send_chunks_worker` đọc tuần tự từng chunk `64 KB`, gửi `FILE_CHUNK` (server chuyển trạng thái sang `TRANSFERRING`, từ chối chunk gửi từ receiver) qua kết nối có khóa và kết thúc bằng `FILE_END`. Thanh tiến trình `[=====>---------] %` được cập nhật trực tiếp theo thời gian thực trên dòng prompt của cả hai đầu.
 6. Khi nhận `FILE_END`, `FileReceiver` đóng file `.part`, gọi `verify_file()` kiểm tra đúng kích thước và mã băm SHA-256. Nếu khớp, đổi tên nguyên tử (`os.replace`) sang tên file chính thức (tự thêm `(1)`, `(2)` nếu trùng) và gửi `FILE_RESULT (status="OK")`. Nếu sai lệch hoặc đứt kết nối giữa chừng, xóa ngay file `.part` và báo lỗi. Server nhận `FILE_RESULT` chuyển phiên sang `COMPLETED` và giải phóng session khỏi `_active_sessions`.

@@ -96,7 +96,7 @@ class FileSender:
         return session_id
 
     def send_file(self, receiver_username: str, file_path: str | Path) -> str:
-        """API contract alias for start_transfer as specified in PLAN_M3.md."""
+        """Start an outgoing file transfer."""
         return self.start_transfer(receiver_username, file_path)
 
     def handle_incoming_message(self, header: dict[str, Any], payload: bytes = b"") -> None:

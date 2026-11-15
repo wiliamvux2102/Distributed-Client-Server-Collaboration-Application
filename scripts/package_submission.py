@@ -4,7 +4,7 @@ Packaging script for project submission.
 Creates a clean, submission-ready ZIP archive adhering strictly to security requirements:
 - Excludes CA private key (certs/private/dev-ca-key.pem) per PKI security standards.
 - Retains server private key (certs/private/server-key.pem) so the server can run TLS immediately.
-- Excludes virtual environments (.venv), cache (__pycache__), git metadata (.git), and temporary files (*.part, *.tmp, *.pdf).
+- Excludes virtual environments (.venv), cache (__pycache__), git metadata (.git), large test PDFs, and temporary files (*.part, *.tmp).
 """
 
 from __future__ import annotations
@@ -148,7 +148,7 @@ def package_project(output_zip: Path) -> None:
         print("[✓] Vệ sinh mã nguồn: Toàn bộ .venv, __pycache__, và file rác đã được làm sạch.")
 
     print("\n" + "=" * 65)
-    print(" HOÀN TẤT ĐÓNG GÓI NỘP BÀI THÀNH CÔNG (100% SẴN SÀNG)")
+    print(" ĐÓNG GÓI THÀNH CÔNG")
     print("=" * 65)
 
 
