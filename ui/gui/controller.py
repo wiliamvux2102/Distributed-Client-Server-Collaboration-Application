@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
@@ -100,12 +101,33 @@ class SessionController:
         self.bridge = bridge or GuiSessionBridge()
         self._lock = threading.Lock()
         self._state = ConnectionState.DISCONNECTED
+        self._shutting_down = False
         self._session_gen = 0
         self._session: ClientSession | None = None
         self._chat: ClientChat | None = None
         self._ft_manager: ClientFileTransferManager | None = None
         self._progress_last_emit: dict[str, float] = {}
         self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="gui-worker")
+
+    def _submit_worker(self, fn: Callable[..., Any], *args: Any) -> bool:
+        """Schedule a background task unless the controller is shutting down."""
+        with self._lock:
+            if self._shutting_down:
+                return False
+            try:
+                self._executor.submit(fn, *args)
+                return True
+            except RuntimeError:
+                return False
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int = 0) -> int:
+        if isinstance(value, bool):
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
     @property
     def state(self) -> ConnectionState:
@@ -137,7 +159,7 @@ class SessionController:
             return False
 
         with self._lock:
-            if self._state != ConnectionState.DISCONNECTED:
+            if self._shutting_down or self._state != ConnectionState.DISCONNECTED:
                 return False
             self._state = ConnectionState.CONNECTING
             self._session_gen += 1
@@ -145,7 +167,12 @@ class SessionController:
             self._progress_last_emit.clear()
 
         self.bridge.state_changed.emit(ConnectionState.CONNECTING.value)
-        self._executor.submit(self._connect_worker, gen, clean_user, server_host, server_port)
+        if not self._submit_worker(self._connect_worker, gen, clean_user, server_host, server_port):
+            with self._lock:
+                if gen == self._session_gen and self._state == ConnectionState.CONNECTING:
+                    self._state = ConnectionState.DISCONNECTED
+            self.bridge.state_changed.emit(ConnectionState.DISCONNECTED.value)
+            return False
         return True
 
     def _connect_worker(
@@ -267,7 +294,7 @@ class SessionController:
         # Probe on a worker thread whether the receiver thread actually exited (fatal socket drop)
         # vs. stayed alive (non-fatal handler/dispatch or heartbeat error), without parsing strings.
         if threading.current_thread() is session._receiver_thread:
-            self._executor.submit(self._probe_receiver_exit, gen, session, message)
+            self._submit_worker(self._probe_receiver_exit, gen, session, message)
         else:
             self.bridge.server_error_received.emit(ErrorEvent(gen=gen, message=message))
 
@@ -333,8 +360,8 @@ class SessionController:
     def _on_transfer_event(self, gen: int, payload: dict[str, Any]) -> None:
         event_name = str(payload.get("event", ""))
         session_id = str(payload.get("session_id", ""))
-        current = int(payload.get("current", 0))
-        total = int(payload.get("total", 0))
+        current = self._coerce_int(payload.get("current"), 0)
+        total = self._coerce_int(payload.get("total"), 0)
 
         if event_name == "progress" and session_id:
             now = time.monotonic()
@@ -369,7 +396,7 @@ class SessionController:
             session = self._session
             if self._state != ConnectionState.CONNECTED or session is None:
                 return
-        self._executor.submit(self._send_safe, gen, session, {"type": mt.LIST_ONLINE})
+        self._submit_worker(self._send_safe, gen, session, {"type": mt.LIST_ONLINE})
 
     def send_broadcast(self, text: str) -> None:
         with self._lock:
@@ -377,7 +404,7 @@ class SessionController:
             chat = self._chat
             if self._state != ConnectionState.CONNECTED or chat is None:
                 return
-        self._executor.submit(self._send_chat_safe, gen, chat.send_broadcast, text)
+        self._submit_worker(self._send_chat_safe, gen, chat.send_broadcast, text)
 
     def send_direct(self, recipient: str, text: str) -> None:
         with self._lock:
@@ -385,7 +412,7 @@ class SessionController:
             chat = self._chat
             if self._state != ConnectionState.CONNECTED or chat is None:
                 return
-        self._executor.submit(self._send_chat_safe, gen, chat.send_direct, recipient, text)
+        self._submit_worker(self._send_chat_safe, gen, chat.send_direct, recipient, text)
 
     def send_file(self, recipient: str, file_path: str | Path) -> None:
         with self._lock:
@@ -393,7 +420,7 @@ class SessionController:
             ft_manager = self._ft_manager
             if self._state != ConnectionState.CONNECTED or ft_manager is None:
                 return
-        self._executor.submit(self._send_file_worker, gen, ft_manager, recipient, Path(file_path))
+        self._submit_worker(self._send_file_worker, gen, ft_manager, recipient, Path(file_path))
 
     def send_file_broadcast(self, recipients: list[str], file_path: str | Path) -> None:
         with self._lock:
@@ -413,7 +440,7 @@ class SessionController:
                 )
             )
             return
-        self._executor.submit(
+        self._submit_worker(
             self._send_file_broadcast_worker, gen, ft_manager, targets, Path(file_path)
         )
 
@@ -469,7 +496,7 @@ class SessionController:
 
     def disconnect(self, reason: str = "Người dùng đã ngắt kết nối.") -> None:
         with self._lock:
-            if self._state != ConnectionState.CONNECTED:
+            if self._shutting_down or self._state != ConnectionState.CONNECTED:
                 return
             self._state = ConnectionState.DISCONNECTING
             gen = self._session_gen
@@ -480,7 +507,13 @@ class SessionController:
             self._ft_manager = None
 
         self.bridge.state_changed.emit(ConnectionState.DISCONNECTING.value)
-        self._executor.submit(self._disconnect_worker, gen, session, ft_manager, reason)
+        if not self._submit_worker(self._disconnect_worker, gen, session, ft_manager, reason):
+            threading.Thread(
+                target=self._disconnect_worker,
+                args=(gen, session, ft_manager, reason),
+                name="gui-disconnect-fallback",
+                daemon=True,
+            ).start()
 
     def _disconnect_worker(
         self,
@@ -509,6 +542,7 @@ class SessionController:
     def shutdown_sync(self, timeout: float = 2.5) -> None:
         """Bounded cleanup for application exit (closeEvent)."""
         with self._lock:
+            self._shutting_down = True
             self._session_gen += 1
             session = self._session
             ft_manager = self._ft_manager
@@ -536,4 +570,5 @@ class SessionController:
         t = threading.Thread(target=_cleanup, name="gui-shutdown", daemon=True)
         t.start()
         done.wait(timeout=timeout)
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        with self._lock:
+            self._executor.shutdown(wait=False, cancel_futures=True)

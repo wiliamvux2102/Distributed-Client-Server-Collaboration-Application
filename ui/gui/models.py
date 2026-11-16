@@ -248,6 +248,12 @@ class MessageBubbleDelegate(QStyledItemDelegate):
             meta_font.setPointSizeF(max(7.5, pt - 1.5))
         return body_font, meta_font
 
+    @staticmethod
+    def _header_text(record: MessageRecord, show_sender: bool) -> str:
+        if show_sender:
+            return f"{record.sender} • {record.timestamp_str}"
+        return record.timestamp_str
+
     def _compute_layout(
         self,
         option: QStyleOptionViewItem,
@@ -260,24 +266,20 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         meta_fm = QFontMetrics(meta_font)
 
         show_sender = record.is_broadcast and not record.is_outgoing
-        header_text = (
-            f"{record.sender}  {record.timestamp_str}"
-            if show_sender
-            else record.timestamp_str
-        )
+        header_text = self._header_text(record, show_sender)
         header_w = meta_fm.horizontalAdvance(header_text)
         header_h = meta_fm.height()
 
         max_text_w = max(120, max_bubble_w - 2 * self.PAD_X)
         text_bounds = body_fm.boundingRect(
             QRect(0, 0, max_text_w, 10000),
-            Qt.TextFlag.TextWordWrap,
+            Qt.TextFlag.TextWordWrap | Qt.TextFlag.TextWrapAnywhere,
             record.text,
         )
 
         content_w = max(text_bounds.width(), header_w)
         bubble_w = min(max_bubble_w, content_w + 2 * self.PAD_X)
-        bubble_h = self.PAD_Y + header_h + self.HEADER_GAP + text_bounds.height() + self.PAD_Y
+        bubble_h = self.PAD_Y + header_h + self.HEADER_GAP + text_bounds.height() + self.PAD_Y + 2
         return bubble_w, bubble_h, text_bounds, show_sender
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
@@ -329,11 +331,7 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         painter.setFont(meta_font)
         meta_color = "#DBEAFE" if record.is_outgoing else PALETTE["text_secondary"]
         painter.setPen(QColor(meta_color))
-        header_text = (
-            f"{record.sender} • {record.timestamp_str}"
-            if show_sender
-            else record.timestamp_str
-        )
+        header_text = self._header_text(record, show_sender)
         header_rect = QRect(
             x + self.PAD_X,
             y + self.PAD_Y,

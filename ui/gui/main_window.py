@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from chat.client_chat import MAX_CHAT_MESSAGE_BYTES
 from common.app_config import CONFIG
 from ui.gui.controller import (
     ChatMessageEvent,
@@ -595,6 +596,7 @@ class MainWindow(QMainWindow):
         self.endpoint_label.setText(f"{event.server_host}:{port_display}")
         self.user_badge.setText(f"@{event.username}")
         self.online_updated_label.setText("Cập nhật: Đang tải...")
+        self.composer.clear()
         self.error_banner.hide()
         self.global_status_label.setText("Đã kết nối TLS")
 
@@ -615,6 +617,7 @@ class MainWindow(QMainWindow):
         self._status_reset_timer.stop()
         self._online_poll_timer.stop()
         self._clear_transfer_cards()
+        self.error_banner.hide()
         self.stack.setCurrentWidget(self.login_page)
         if event.message:
             self._show_login_error(event.message)
@@ -790,8 +793,25 @@ class MainWindow(QMainWindow):
             self.message_view.scrollToBottom()
 
     def _on_send_clicked(self) -> None:
+        if self.controller.state != ConnectionState.CONNECTED:
+            self._show_error_banner("Chưa kết nối tới server.")
+            return
+
         raw_text = self.composer.toPlainText()
         if not raw_text.strip():
+            return
+
+        try:
+            encoded = raw_text.encode("utf-8")
+        except UnicodeEncodeError:
+            self._show_error_banner("Tin nhắn chứa ký tự UTF-8 không hợp lệ.")
+            return
+
+        if len(encoded) > MAX_CHAT_MESSAGE_BYTES:
+            self._show_error_banner(
+                f"Tin nhắn vượt quá giới hạn {MAX_CHAT_MESSAGE_BYTES} bytes "
+                f"(hiện tại {len(encoded)} bytes)."
+            )
             return
 
         cid = self.store.active_conv_id
@@ -807,6 +827,10 @@ class MainWindow(QMainWindow):
         self.composer.clear()
 
     def _on_attach_clicked(self) -> None:
+        if self.controller.state != ConnectionState.CONNECTED:
+            self._show_error_banner("Chưa kết nối tới server.")
+            return
+
         cid = self.store.active_conv_id
         if cid == BROADCAST_CONV_ID:
             peers = list(self.store.online_users)
@@ -820,6 +844,15 @@ class MainWindow(QMainWindow):
             )
             if not file_path:
                 return
+            if self.controller.state != ConnectionState.CONNECTED:
+                self._show_error_banner("Kết nối đã bị ngắt trước khi gửi file.")
+                return
+            peers = list(self.store.online_users)
+            if not peers:
+                self._show_error_banner(
+                    "Không còn người dùng nào khác đang online để gửi file."
+                )
+                return
             self.controller.send_file_broadcast(peers, Path(file_path))
             self._status_reset_timer.stop()
             self.global_status_label.setText(
@@ -829,6 +862,9 @@ class MainWindow(QMainWindow):
 
         file_path, _ = QFileDialog.getOpenFileName(self, f"Chọn file gửi tới @{cid}")
         if not file_path:
+            return
+        if self.controller.state != ConnectionState.CONNECTED:
+            self._show_error_banner("Kết nối đã bị ngắt trước khi gửi file.")
             return
         self.controller.send_file(cid, Path(file_path))
 

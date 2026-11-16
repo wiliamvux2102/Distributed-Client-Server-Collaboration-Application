@@ -355,6 +355,113 @@ class GuiControllerAndWindowTests(unittest.TestCase):
         mock_session_2.close.assert_called_once()
         ctrl.shutdown_sync(timeout=0.5)
 
+    def test_bubble_delegate_wraps_long_unbroken_tokens_in_size_hint(self) -> None:
+        from PySide6.QtCore import QModelIndex, QRect
+        from PySide6.QtWidgets import QStyleOptionViewItem
+        from ui.gui.models import MessageBubbleDelegate
+
+        _get_app()
+        model = MessageListModel()
+        short_rec = MessageRecord(
+            sender="alice",
+            text="hi",
+            is_outgoing=False,
+            is_broadcast=True,
+            timestamp_str="10:00",
+        )
+        long_token_rec = MessageRecord(
+            sender="alice",
+            text="a" * 160,
+            is_outgoing=False,
+            is_broadcast=True,
+            timestamp_str="10:00",
+        )
+        model.append_message(short_rec)
+        model.append_message(long_token_rec)
+
+        delegate = MessageBubbleDelegate()
+        option = QStyleOptionViewItem()
+        option.rect = QRect(0, 0, 360, 400)
+
+        short_h = delegate.sizeHint(option, model.index(0, 0)).height()
+        long_h = delegate.sizeHint(option, model.index(1, 0)).height()
+        self.assertGreater(long_h, short_h * 2)
+
+    def test_controller_post_shutdown_calls_and_malformed_progress_are_safe(self) -> None:
+        ctrl = SessionController()
+        ctrl._state = ConnectionState.CONNECTED
+        ctrl._session_gen = 4
+        ctrl._session = Mock()
+        ctrl._chat = Mock()
+        ctrl._ft_manager = Mock()
+
+        # Malformed current/total booleans or non-numeric strings should coerce to 0 cleanly
+        progress_events = []
+        ctrl.bridge.transfer_event_received.connect(progress_events.append)
+        ctrl._on_transfer_event(
+            4,
+            {
+                "event": "progress",
+                "session_id": "s1",
+                "direction": "upload",
+                "peer": "bob",
+                "filename": "a.txt",
+                "current": True,
+                "total": "invalid",
+            },
+        )
+        self.assertEqual(len(progress_events), 1)
+        self.assertEqual(progress_events[0].current, 0)
+        self.assertEqual(progress_events[0].total, 0)
+
+        ctrl.shutdown_sync(timeout=0.5)
+
+        # Post-shutdown operations must be no-ops without raising RuntimeError
+        self.assertFalse(ctrl.connect("alice", "127.0.0.1", 5000))
+        ctrl.refresh_online_users()
+        ctrl.send_broadcast("hi")
+        ctrl.send_direct("bob", "hi")
+        ctrl.send_file("bob", "file.txt")
+        ctrl.send_file_broadcast(["bob"], "file.txt")
+        ctrl.disconnect("late")
+
+    def test_main_window_send_guards_oversized_and_disconnected_messages(self) -> None:
+        from chat.client_chat import MAX_CHAT_MESSAGE_BYTES
+
+        _get_app()
+        ctrl = SessionController()
+        window = MainWindow(controller=ctrl)
+        try:
+            window._on_connected(
+                ConnectResultEvent(gen=ctrl.current_gen, username="alice", server_host="127.0.0.1", server_port=5000)
+            )
+            self.assertEqual(window.composer.toPlainText(), "")
+
+            # While disconnected, send is blocked with banner and keeps composer text
+            window.composer.setPlainText("hello offline")
+            window._on_send_clicked()
+            self.assertFalse(window.error_banner.isHidden())
+            self.assertEqual(window.composer.toPlainText(), "hello offline")
+
+            # While connected, oversized UTF-8 payload is rejected cleanly without clearing draft
+            ctrl._state = ConnectionState.CONNECTED
+            oversized = "a" * (MAX_CHAT_MESSAGE_BYTES + 10)
+            window.composer.setPlainText(oversized)
+            before_count = window.message_model.rowCount()
+            window._on_send_clicked()
+            self.assertEqual(window.message_model.rowCount(), before_count)
+            self.assertFalse(window.error_banner.isHidden())
+            self.assertEqual(window.composer.toPlainText(), oversized)
+
+            # New connection clears stale draft & hides workspace banner
+            window._on_connected(
+                ConnectResultEvent(gen=ctrl.current_gen, username="alice", server_host="127.0.0.1", server_port=5000)
+            )
+            self.assertEqual(window.composer.toPlainText(), "")
+            self.assertTrue(window.error_banner.isHidden())
+        finally:
+            window.close()
+
 
 if __name__ == "__main__":
     unittest.main()
