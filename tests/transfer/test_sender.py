@@ -342,6 +342,160 @@ class TestSender(unittest.TestCase):
         self.assertIsNone(alice_manager.get_active_status())
         self.assertIsNone(bob_manager.get_active_status())
 
+    def test_duplicate_file_accept_starts_only_one_upload_worker(self) -> None:
+        """Receiving FILE_ACCEPT twice for the same session must not launch duplicate workers."""
+        from unittest.mock import patch
+
+        spawned: list[str] = []
+
+        def fake_worker(self_obj, session) -> None:
+            spawned.append(session.session_id)
+
+        sender = FileSender(username="alice", send_frame_fn=lambda h, p=b"": None, chunk_size=16)
+        sid = sender.start_transfer("bob", self.file_path)
+
+        with patch.object(FileSender, "_send_chunks_worker", fake_worker):
+            sender.handle_incoming_message({"type": "FILE_ACCEPT", "session_id": sid}, b"")
+            sender.handle_incoming_message({"type": "FILE_ACCEPT", "session_id": sid}, b"")
+            time.sleep(0.05)
+
+        self.assertEqual(spawned, [sid])
+
+    def test_send_file_rejects_empty_or_whitespace_path(self) -> None:
+        """Empty or whitespace paths must error without opening the working directory."""
+        errors: list[str] = []
+        sent: list[dict] = []
+        mgr = ClientFileTransferManager(
+            username="alice",
+            send_fn=sent.append,
+            print_fn=errors.append,
+        )
+        mgr.send_file("bob", "   ")
+        self.assertEqual(sent, [])
+        self.assertTrue(any("cannot be empty" in line.lower() for line in errors))
+
+    def test_corrupt_base64_chunk_aborts_only_affected_session_and_notifies_error(self) -> None:
+        """Invalid base64 chunk aborts only that session via _on_error while keeping other downloads intact."""
+        import base64
+        import hashlib
+
+        alice_out: list[dict] = []
+        events: list[dict] = []
+        prints: list[str] = []
+
+        mgr = ClientFileTransferManager(
+            username="bob",
+            send_fn=alice_out.append,
+            print_fn=prints.append,
+            on_event=events.append,
+        )
+        mgr.receiver.download_dir = self.test_dir / "dl"
+        mgr.receiver.download_dir.mkdir(exist_ok=True)
+
+        good_payload = b"hello-world"
+        good_sha = hashlib.sha256(good_payload).hexdigest()
+
+        try:
+            mgr.handle_incoming(
+                {
+                    "type": "FILE_INIT",
+                    "session_id": "sid_bad_b64",
+                    "sender": "alice",
+                    "receiver": "bob",
+                    "filename": "bad.bin",
+                    "filesize": 5,
+                    "sha256": "0" * 64,
+                    "total_chunks": 1,
+                }
+            )
+            mgr.handle_incoming(
+                {
+                    "type": "FILE_INIT",
+                    "session_id": "sid_good",
+                    "sender": "carol",
+                    "receiver": "bob",
+                    "filename": "good.bin",
+                    "filesize": len(good_payload),
+                    "sha256": good_sha,
+                    "total_chunks": 1,
+                }
+            )
+
+            # Corrupt base64 on sid_bad_b64 only
+            mgr.handle_incoming(
+                {
+                    "type": "FILE_CHUNK",
+                    "session_id": "sid_bad_b64",
+                    "chunk_index": 0,
+                    "binary_payload_base64": "!!!not-valid-base64!!!",
+                }
+            )
+
+            error_events = [
+                e for e in events if e.get("event") == "failed" and e.get("session_id") == "sid_bad_b64"
+            ]
+            self.assertEqual(len(error_events), 1)
+            self.assertEqual(error_events[0].get("direction"), "download")
+            self.assertEqual(error_events[0].get("peer"), "alice")
+            self.assertTrue(
+                any(m.get("type") == "FILE_ERROR" and m.get("session_id") == "sid_bad_b64" for m in alice_out)
+            )
+
+            # Second download session still completes cleanly
+            mgr.handle_incoming(
+                {
+                    "type": "FILE_CHUNK",
+                    "session_id": "sid_good",
+                    "chunk_index": 0,
+                    "binary_payload_base64": base64.b64encode(good_payload).decode("ascii"),
+                }
+            )
+            mgr.handle_incoming({"type": "FILE_END", "session_id": "sid_good"})
+            self.assertEqual((mgr.receiver.download_dir / "good.bin").read_bytes(), good_payload)
+        finally:
+            mgr.cleanup("test cleanup")
+
+    def test_file_error_on_download_preserves_direction_and_peer_metadata(self) -> None:
+        """FILE_ERROR on an active download must preserve direction='download' and sender peer in UI event."""
+        events: list[dict] = []
+        mgr = ClientFileTransferManager(
+            username="bob",
+            send_fn=lambda m: None,
+            print_fn=lambda s: None,
+            on_event=events.append,
+        )
+        mgr.receiver.download_dir = self.test_dir / "dl2"
+        mgr.receiver.download_dir.mkdir(exist_ok=True)
+
+        try:
+            mgr.handle_incoming(
+                {
+                    "type": "FILE_INIT",
+                    "session_id": "sid_err_meta",
+                    "sender": "alice",
+                    "receiver": "bob",
+                    "filename": "report.pdf",
+                    "filesize": 100,
+                    "sha256": "a" * 64,
+                    "total_chunks": 1,
+                }
+            )
+            mgr.handle_incoming(
+                {
+                    "type": "FILE_ERROR",
+                    "session_id": "sid_err_meta",
+                    "code": "ERR_PEER_DISCONNECTED",
+                    "reason": "Peer offline",
+                }
+            )
+
+            err_ev = next(e for e in events if e.get("event") == "failed")
+            self.assertEqual(err_ev["session_id"], "sid_err_meta")
+            self.assertEqual(err_ev["direction"], "download")
+            self.assertEqual(err_ev["peer"], "alice")
+        finally:
+            mgr.cleanup("test cleanup")
+
 
 if __name__ == "__main__":
     unittest.main()

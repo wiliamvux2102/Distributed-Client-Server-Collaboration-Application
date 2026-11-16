@@ -11,6 +11,56 @@ from typing import TypedDict
 DEFAULT_CHUNK_SIZE = 64 * 1024  # 64 KB per chunk
 
 
+def is_valid_transfer_id(value: object) -> bool:
+    """Validate that a transfer session identifier is a non-empty path-safe string."""
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and not any(ch.isspace() for ch in value)
+        and "/" not in value
+        and "\\" not in value
+        and ".." not in value
+        and ":" not in value
+        and "\x00" not in value
+    )
+
+
+def is_safe_filename(value: object) -> bool:
+    """Strictly check that a wire filename is a single path-safe filename."""
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and value.strip() not in {".", ".."}
+        and ".." not in value
+        and "/" not in value
+        and "\\" not in value
+        and ":" not in value
+        and "\x00" not in value
+    )
+
+
+def sanitize_filename(filename: object, fallback: str = "unnamed_file") -> str:
+    """Reduce any filename string to a safe single basename for local staging."""
+    raw_name = filename.replace("\\", "/") if isinstance(filename, str) else ""
+    safe_name = Path(raw_name).name.strip()
+    if not safe_name or safe_name in {".", ".."} or ":" in safe_name or "\x00" in safe_name:
+        return fallback
+    return safe_name
+
+
+def parse_non_negative_int(value: object, field_name: str = "value") -> int:
+    """Parse a non-negative integer while rejecting booleans and non-numeric values."""
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be an integer, not bool.")
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"Invalid {field_name}: {value}") from error
+    if parsed < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+    return parsed
+
+
 class FileMetadata(TypedDict):
     filename: str
     filesize: int

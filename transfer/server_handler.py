@@ -11,6 +11,11 @@ import time
 from typing import Callable, Any
 
 from common import message_types as mt
+from transfer.integrity import (
+    is_safe_filename,
+    is_valid_transfer_id,
+    parse_non_negative_int,
+)
 
 SendToUserCallable = Callable[[str, dict[str, Any], bytes], bool]
 IsUserOnlineCallable = Callable[[str], bool]
@@ -57,127 +62,63 @@ class FileTransferServerHandler:
         elif msg_type in ("FILE_ACCEPT", "FILE_CHUNK", "FILE_END", "FILE_RESULT", "FILE_ERROR"):
             self._handle_relay(from_user, header, payload)
 
+    def _send_error(self, target_user: str, session_id: str, code: str, reason: str) -> None:
+        self.send_to_user(
+            target_user,
+            {
+                "type": "FILE_ERROR",
+                "session_id": session_id,
+                "code": code,
+                "reason": reason,
+            },
+            b"",
+        )
+
     def _handle_init(self, sender_user: str, header: dict[str, Any]) -> None:
         """Validate recipient online status, create session entry, and forward FILE_INIT."""
         session_id = header.get("session_id")
         receiver = header.get("receiver") or header.get("recipient")
         filename = header.get("filename", "unknown")
 
-        # Validation: session_id and receiver
-        if (
-            not session_id
-            or not isinstance(session_id, str)
-            or not session_id.strip()
-            or "/" in session_id
-            or "\\" in session_id
-            or ".." in session_id
-            or ":" in session_id
-            or "\x00" in session_id
-        ):
-            self.send_to_user(
-                sender_user,
-                {
-                    "type": "FILE_ERROR",
-                    "session_id": "",
-                    "code": "ERR_INVALID_METADATA",
-                    "reason": "Missing or invalid session_id.",
-                },
-                b"",
-            )
+        if not is_valid_transfer_id(session_id):
+            self._send_error(sender_user, "", "ERR_INVALID_METADATA", "Missing or invalid session_id.")
             return
 
-        if not receiver or not isinstance(receiver, str):
-            self.send_to_user(
-                sender_user,
-                {
-                    "type": "FILE_ERROR",
-                    "session_id": session_id,
-                    "code": "ERR_INVALID_METADATA",
-                    "reason": "Missing or invalid receiver.",
-                },
-                b"",
-            )
+        if not isinstance(receiver, str) or not receiver.strip():
+            self._send_error(sender_user, session_id, "ERR_INVALID_METADATA", "Missing or invalid receiver.")
+            return
+        receiver = receiver.strip()
+
+        if not is_safe_filename(filename):
+            self._send_error(sender_user, session_id, "ERR_INVALID_METADATA", "Invalid or unsafe filename.")
             return
 
-        # Validation: filename (check against path traversal and directory separators)
-        if (
-            not filename
-            or not isinstance(filename, str)
-            or not filename.strip()
-            or filename.strip() in {".", ".."}
-            or ".." in filename
-            or "/" in filename
-            or "\\" in filename
-            or ":" in filename
-            or "\x00" in filename
-        ):
-            self.send_to_user(
-                sender_user,
-                {
-                    "type": "FILE_ERROR",
-                    "session_id": session_id,
-                    "code": "ERR_INVALID_METADATA",
-                    "reason": "Invalid or unsafe filename.",
-                },
-                b"",
-            )
-            return
-
-        # Validation: filesize
         raw_filesize = header.get("filesize")
         try:
-            filesize = int(raw_filesize)
-            if filesize < 0:
-                raise ValueError("filesize must be non-negative")
-        except (TypeError, ValueError):
-            self.send_to_user(
-                sender_user,
-                {
-                    "type": "FILE_ERROR",
-                    "session_id": session_id,
-                    "code": "ERR_INVALID_METADATA",
-                    "reason": f"Invalid filesize: {raw_filesize}",
-                },
-                b"",
-            )
+            filesize = parse_non_negative_int(raw_filesize, "filesize")
+        except ValueError:
+            self._send_error(sender_user, session_id, "ERR_INVALID_METADATA", f"Invalid filesize: {raw_filesize}")
             return
 
-        # Validation: optional chunk_size and total_chunks
         raw_chunk_size = header.get("chunk_size")
         if raw_chunk_size is not None:
             try:
-                chunk_size = int(raw_chunk_size)
+                chunk_size = parse_non_negative_int(raw_chunk_size, "chunk_size")
                 if chunk_size <= 0:
                     raise ValueError("chunk_size must be positive")
-            except (TypeError, ValueError):
-                self.send_to_user(
-                    sender_user,
-                    {
-                        "type": "FILE_ERROR",
-                        "session_id": session_id,
-                        "code": "ERR_INVALID_METADATA",
-                        "reason": f"Invalid chunk_size: {raw_chunk_size}",
-                    },
-                    b"",
+            except ValueError:
+                self._send_error(
+                    sender_user, session_id, "ERR_INVALID_METADATA", f"Invalid chunk_size: {raw_chunk_size}"
                 )
                 return
 
         raw_total_chunks = header.get("total_chunks")
         if raw_total_chunks is not None:
             try:
-                total_chunks = int(raw_total_chunks)
-                if total_chunks < 0:
-                    raise ValueError("total_chunks must be non-negative")
-            except (TypeError, ValueError):
-                self.send_to_user(
-                    sender_user,
-                    {
-                        "type": "FILE_ERROR",
-                        "session_id": session_id,
-                        "code": "ERR_INVALID_METADATA",
-                        "reason": f"Invalid total_chunks: {raw_total_chunks}",
-                    },
-                    b"",
+                parse_non_negative_int(raw_total_chunks, "total_chunks")
+            except ValueError:
+                self._send_error(
+                    sender_user, session_id, "ERR_INVALID_METADATA", f"Invalid total_chunks: {raw_total_chunks}"
                 )
                 return
 
@@ -186,54 +127,30 @@ class FileTransferServerHandler:
         header["receiver"] = receiver
 
         if receiver == sender_user:
-            self.send_to_user(
-                sender_user,
-                {
-                    "type": "FILE_ERROR",
-                    "session_id": session_id,
-                    "code": "ERR_RECIPIENT_SELF",
-                    "reason": "Không thể gửi file cho chính mình.",
-                },
-                b"",
-            )
+            self._send_error(sender_user, session_id, "ERR_RECIPIENT_SELF", "Không thể gửi file cho chính mình.")
             return
 
         if not self.is_user_online(receiver):
-            self.send_to_user(
-                sender_user,
-                {
-                    "type": "FILE_ERROR",
-                    "session_id": session_id,
-                    "code": "ERR_USER_OFFLINE",
-                    "reason": f"User '{receiver}' is currently offline.",
-                },
-                b"",
-            )
+            self._send_error(sender_user, session_id, "ERR_USER_OFFLINE", f"User '{receiver}' is currently offline.")
             return
 
+        duplicate = False
         with self._lock:
             if session_id in self._active_sessions:
-                self.send_to_user(
-                    sender_user,
-                    {
-                        "type": "FILE_ERROR",
-                        "session_id": session_id,
-                        "code": "ERR_DUPLICATE_SESSION",
-                        "reason": f"Session ID '{session_id}' already active.",
-                    },
-                    b"",
+                duplicate = True
+            else:
+                self._active_sessions[session_id] = ServerTransferSession(
+                    session_id=session_id,
+                    sender=sender_user,
+                    receiver=receiver,
+                    filename=filename,
+                    filesize=filesize,
+                    state="INIT",
                 )
-                return
 
-            session = ServerTransferSession(
-                session_id=session_id,
-                sender=sender_user,
-                receiver=receiver,
-                filename=filename,
-                filesize=filesize,
-                state="INIT",
-            )
-            self._active_sessions[session_id] = session
+        if duplicate:
+            self._send_error(sender_user, session_id, "ERR_DUPLICATE_SESSION", f"Session ID '{session_id}' already active.")
+            return
 
         success = self.send_to_user(receiver, header, b"")
         if not success:
@@ -259,148 +176,79 @@ class FileTransferServerHandler:
     ) -> None:
         """Relay control frames and data chunks between sender and receiver with state validation."""
         session_id = header.get("session_id")
-        if not session_id:
-            return
-
-        with self._lock:
-            session = self._active_sessions.get(session_id)
-
-        if not session:
-            self.send_to_user(
-                from_user,
-                {
-                    "type": "FILE_ERROR",
-                    "session_id": session_id,
-                    "code": "ERR_SESSION_NOT_FOUND",
-                    "reason": "Transfer session not found or expired.",
-                },
-                b"",
-            )
+        if not isinstance(session_id, str) or not session_id:
             return
 
         msg_type = header.get("type")
+        target_user: str | None = None
+        error_code: str | None = None
+        error_reason: str = ""
 
-        # Validate message direction and state machine
-        if msg_type == "FILE_ACCEPT":
-            if from_user != session.receiver:
-                self.send_to_user(
-                    from_user,
-                    {
-                        "type": "FILE_ERROR",
-                        "session_id": session_id,
-                        "code": "ERR_UNAUTHORIZED_ROLE",
-                        "reason": f"Only receiver '{session.receiver}' can send FILE_ACCEPT.",
-                    },
-                    b"",
-                )
-                return
-            if session.state != "INIT":
-                self.send_to_user(
-                    from_user,
-                    {
-                        "type": "FILE_ERROR",
-                        "session_id": session_id,
-                        "code": "ERR_INVALID_STATE",
-                        "reason": f"Cannot accept session in state '{session.state}'.",
-                    },
-                    b"",
-                )
-                return
-            session.state = "ACCEPTED"
-            target_user = session.sender
-
-        elif msg_type == "FILE_CHUNK":
-            if from_user != session.sender:
-                self.send_to_user(
-                    from_user,
-                    {
-                        "type": "FILE_ERROR",
-                        "session_id": session_id,
-                        "code": "ERR_UNAUTHORIZED_ROLE",
-                        "reason": f"Only sender '{session.sender}' can send FILE_CHUNK.",
-                    },
-                    b"",
-                )
-                return
-            if session.state not in ("ACCEPTED", "TRANSFERRING"):
-                self.send_to_user(
-                    from_user,
-                    {
-                        "type": "FILE_ERROR",
-                        "session_id": session_id,
-                        "code": "ERR_INVALID_STATE",
-                        "reason": f"Cannot send chunks in state '{session.state}'.",
-                    },
-                    b"",
-                )
-                return
-            session.state = "TRANSFERRING"
-            target_user = session.receiver
-
-        elif msg_type == "FILE_END":
-            if from_user != session.sender:
-                self.send_to_user(
-                    from_user,
-                    {
-                        "type": "FILE_ERROR",
-                        "session_id": session_id,
-                        "code": "ERR_UNAUTHORIZED_ROLE",
-                        "reason": f"Only sender '{session.sender}' can send FILE_END.",
-                    },
-                    b"",
-                )
-                return
-            if session.state not in ("TRANSFERRING", "ACCEPTED"):
-                self.send_to_user(
-                    from_user,
-                    {
-                        "type": "FILE_ERROR",
-                        "session_id": session_id,
-                        "code": "ERR_INVALID_STATE",
-                        "reason": f"Cannot send FILE_END in state '{session.state}'.",
-                    },
-                    b"",
-                )
-                return
-            session.state = "WAITING_RESULT"
-            target_user = session.receiver
-
-        elif msg_type == "FILE_RESULT":
-            if from_user != session.receiver:
-                self.send_to_user(
-                    from_user,
-                    {
-                        "type": "FILE_ERROR",
-                        "session_id": session_id,
-                        "code": "ERR_UNAUTHORIZED_ROLE",
-                        "reason": f"Only receiver '{session.receiver}' can send FILE_RESULT.",
-                    },
-                    b"",
-                )
-                return
-            session.state = "COMPLETED"
-            target_user = session.sender
-
-        elif msg_type == "FILE_ERROR":
-            if from_user not in (session.sender, session.receiver):
-                return
-            session.state = "FAILED"
-            target_user = session.receiver if from_user == session.sender else session.sender
-
-        else:
-            return
-
-        session.last_updated = time.time()
-
-        success = self.send_to_user(target_user, header, payload)
-        if not success:
-            self.on_client_disconnect(target_user)
-            return
-
-        # Clean up session upon termination or error
-        if msg_type in ("FILE_RESULT", "FILE_ERROR"):
-            with self._lock:
+        # Validate role, state transitions, and terminal cleanup atomically under self._lock
+        # before performing network I/O to prevent concurrent thread races and lock inversion.
+        with self._lock:
+            session = self._active_sessions.get(session_id)
+            if not session:
+                error_code = "ERR_SESSION_NOT_FOUND"
+                error_reason = "Transfer session not found or expired."
+            elif msg_type == "FILE_ACCEPT":
+                if from_user != session.receiver:
+                    error_code = "ERR_UNAUTHORIZED_ROLE"
+                    error_reason = f"Only receiver '{session.receiver}' can send FILE_ACCEPT."
+                elif session.state != "INIT":
+                    error_code = "ERR_INVALID_STATE"
+                    error_reason = f"Cannot accept session in state '{session.state}'."
+                else:
+                    session.state = "ACCEPTED"
+                    target_user = session.sender
+            elif msg_type == "FILE_CHUNK":
+                if from_user != session.sender:
+                    error_code = "ERR_UNAUTHORIZED_ROLE"
+                    error_reason = f"Only sender '{session.sender}' can send FILE_CHUNK."
+                elif session.state not in ("ACCEPTED", "TRANSFERRING"):
+                    error_code = "ERR_INVALID_STATE"
+                    error_reason = f"Cannot send chunks in state '{session.state}'."
+                else:
+                    session.state = "TRANSFERRING"
+                    target_user = session.receiver
+            elif msg_type == "FILE_END":
+                if from_user != session.sender:
+                    error_code = "ERR_UNAUTHORIZED_ROLE"
+                    error_reason = f"Only sender '{session.sender}' can send FILE_END."
+                elif session.state not in ("TRANSFERRING", "ACCEPTED"):
+                    error_code = "ERR_INVALID_STATE"
+                    error_reason = f"Cannot send FILE_END in state '{session.state}'."
+                else:
+                    session.state = "WAITING_RESULT"
+                    target_user = session.receiver
+            elif msg_type == "FILE_RESULT":
+                if from_user != session.receiver:
+                    error_code = "ERR_UNAUTHORIZED_ROLE"
+                    error_reason = f"Only receiver '{session.receiver}' can send FILE_RESULT."
+                else:
+                    session.state = "COMPLETED"
+                    target_user = session.sender
+                    self._active_sessions.pop(session_id, None)
+            elif msg_type == "FILE_ERROR":
+                if from_user not in (session.sender, session.receiver):
+                    return
+                session.state = "FAILED"
+                target_user = session.receiver if from_user == session.sender else session.sender
                 self._active_sessions.pop(session_id, None)
+            else:
+                return
+
+            if error_code is None and session is not None:
+                session.last_updated = time.time()
+
+        if error_code is not None:
+            self._send_error(from_user, session_id, error_code, error_reason)
+            return
+
+        if target_user is not None:
+            success = self.send_to_user(target_user, header, payload)
+            if not success:
+                self.on_client_disconnect(target_user)
 
     def prune_stale_sessions(self, timeout_seconds: float = 60.0) -> list[str]:
         """Prune transfer sessions that have been inactive longer than timeout_seconds."""
@@ -479,12 +327,16 @@ def _send_to_user_bridge(target_username: str, header: dict[str, Any], payload: 
         with session.send_lock:
             send_message(session.connection, message)
         return True
-    except Exception:
+    except ValueError:
+        # Payload serialization/size error must not terminate an unrelated receiver connection.
+        return False
+    except OSError:
         try:
             session.connection.shutdown(socket.SHUT_RDWR)
-        except Exception:
+        except OSError:
             pass
-        user_registry.remove_if_same(target_username, session.connection)
+        if user_registry.remove_if_same(target_username, session.connection):
+            file_transfer_server_handler.on_client_disconnect(target_username)
         return False
 
 

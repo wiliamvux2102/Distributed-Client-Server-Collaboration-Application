@@ -11,7 +11,13 @@ import time
 import uuid
 from typing import Callable, Any
 
-from transfer.integrity import get_file_metadata, DEFAULT_CHUNK_SIZE
+from transfer.integrity import (
+    DEFAULT_CHUNK_SIZE,
+    get_file_metadata,
+    is_valid_transfer_id,
+    parse_non_negative_int,
+    sanitize_filename,
+)
 from transfer.receiver import FileReceiver
 
 SendFrameCallable = Callable[[dict[str, Any], bytes], None]
@@ -34,6 +40,7 @@ class UploadSession:
     chunk_size: int
     total_chunks: int
     sent_bytes: int = 0
+    started: bool = False
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
@@ -105,9 +112,13 @@ class FileSender:
         session_id = header.get("session_id", "")
 
         if msg_type == "FILE_ACCEPT":
+            should_start = False
             with self._lock:
                 session = self._sessions.get(session_id)
-            if session:
+                if session and not session.started:
+                    session.started = True
+                    should_start = True
+            if should_start and session is not None:
                 threading.Thread(target=self._send_chunks_worker, args=(session,), daemon=True).start()
 
         elif msg_type == "FILE_RESULT":
@@ -177,20 +188,21 @@ class FileSender:
         except Exception as error:
             session.cancel_event.set()
             with self._lock:
-                self._sessions.pop(session.session_id, None)
-            try:
-                self.send_frame(
-                    {
-                        "type": "FILE_ERROR",
-                        "session_id": session.session_id,
-                        "reason": str(error),
-                    },
-                    b"",
-                )
-            except Exception:
-                pass
-            if self.on_error:
-                self.on_error(session.session_id, session.filename, f"Upload error: {error}")
+                popped = self._sessions.pop(session.session_id, None)
+            if popped is not None:
+                try:
+                    self.send_frame(
+                        {
+                            "type": "FILE_ERROR",
+                            "session_id": session.session_id,
+                            "reason": str(error),
+                        },
+                        b"",
+                    )
+                except Exception:
+                    pass
+                if self.on_error:
+                    self.on_error(session.session_id, session.filename, f"Upload error: {error}")
 
     def cancel_transfer(self, session_id: str, reason: str = "Sender cancelled transfer") -> None:
         """Cancel an ongoing file upload session."""
@@ -360,40 +372,59 @@ class ClientFileTransferManager:
             try:
                 payload = base64.b64decode(raw_b64, validate=True)
             except Exception as error:
-                session_id = message.get("session_id", "")
-                self._report_error(
-                    session_id,
-                    message.get("filename", "unknown"),
-                    f"Dữ liệu Base64 nhận được không hợp lệ: {error}",
-                )
+                raw_sid = message.get("session_id", "")
+                session_id = raw_sid if isinstance(raw_sid, str) else ""
+                filename = sanitize_filename(message.get("filename", "unknown"), fallback="unknown")
+                err_text = f"Dữ liệu Base64 nhận được không hợp lệ: {error}"
                 if session_id:
-                    self.send_fn({
-                        "type": "FILE_ERROR",
-                        "session_id": session_id,
-                        "code": "ERR_CORRUPT_PAYLOAD",
-                        "reason": f"Base64 decoding failed: {error}",
-                    })
-                    with self._lock:
-                        self._active_transfers.pop(session_id, None)
-                    self._trigger_update()
-                    self.receiver.abort_all(f"Corrupt base64 payload: {error}")
+                    try:
+                        self.send_fn({
+                            "type": "FILE_ERROR",
+                            "session_id": session_id,
+                            "code": "ERR_CORRUPT_PAYLOAD",
+                            "reason": f"Base64 decoding failed: {error}",
+                        })
+                    except Exception:
+                        pass
+                    self.receiver._abort_session(
+                        session_id,
+                        f"Corrupt base64 payload: {error}",
+                        notify_peer=False,
+                    )
+                with self._lock:
+                    still_active = bool(session_id and session_id in self._active_transfers)
+                if still_active or not session_id:
+                    self._on_error(session_id, filename, err_text)
                 return
 
         msg_type = message.get("type", "")
         if msg_type == "FILE_ERROR":
-            session_id = message.get("session_id", "")
-            with self._lock:
-                self._active_transfers.pop(session_id, None)
-            self._trigger_update()
-            # Forward error to both sender and receiver so active upload or download is notified and cleaned up
+            raw_sid = message.get("session_id", "")
+            session_id = raw_sid if isinstance(raw_sid, str) else ""
+            # Dispatch before popping so _on_error preserves direction and peer metadata.
             self.sender.handle_incoming_message(message, payload)
             self.receiver.handle_incoming_message(message, payload)
+            if session_id:
+                with self._lock:
+                    remaining = self._active_transfers.get(session_id)
+                if remaining is not None:
+                    reason = str(message.get("reason", "Transfer error reported by peer."))
+                    self._on_error(session_id, remaining.get("filename", "unknown"), reason)
+            elif message.get("reason"):
+                self.print_fn(f"[FILE ERROR] {message.get('reason')}")
         elif msg_type in ("FILE_INIT", "FILE_CHUNK", "FILE_END"):
             if msg_type == "FILE_INIT":
-                filename = message.get("filename", "unnamed_file")
-                sender = message.get("sender", "unknown")
-                filesize = int(message.get("filesize", 0))
                 session_id = message.get("session_id", "")
+                if not is_valid_transfer_id(session_id):
+                    return
+                try:
+                    filesize = parse_non_negative_int(message.get("filesize", 0), "filesize")
+                    parse_non_negative_int(message.get("total_chunks", 0), "total_chunks")
+                except ValueError:
+                    return
+                filename = sanitize_filename(message.get("filename", "unnamed_file"))
+                raw_sender = message.get("sender", "unknown")
+                sender = raw_sender if isinstance(raw_sender, str) else "unknown"
                 with self._lock:
                     self._active_transfers[session_id] = {
                         "filename": filename,
@@ -433,6 +464,9 @@ class ClientFileTransferManager:
         """CLI entrypoint for the /sendfile command."""
         try:
             cleaned_path = str(filepath).strip("\"' ")
+            if not cleaned_path:
+                self.print_fn("[ERROR] File path cannot be empty.")
+                return
             path = Path(cleaned_path)
             if not path.is_file():
                 self.print_fn(f"[ERROR] File not found: {path}")

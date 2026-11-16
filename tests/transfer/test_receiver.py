@@ -335,6 +335,94 @@ class TestReceiver(unittest.TestCase):
             self.assertTrue((self.download_dir / f".{sid}_unnamed_file.part").exists())
             self.receiver.handle_incoming_message({"type": "FILE_ERROR", "session_id": sid}, b"")
 
+    def test_clean_stale_temp_files_preserves_multi_part_archive_names(self) -> None:
+        """Startup cleanup removes .part staging files but keeps completed files like archive.part1.rar."""
+        archive_part = self.download_dir / "archive.part1.rar"
+        regular_file = self.download_dir / "notes.txt"
+        stale_part = self.download_dir / ".sid_stale_file.part"
+        archive_part.write_bytes(b"rar-part-1")
+        regular_file.write_bytes(b"hello")
+        stale_part.write_bytes(b"incomplete")
+
+        self.receiver.clean_stale_temp_files()
+
+        self.assertTrue(archive_part.exists())
+        self.assertTrue(regular_file.exists())
+        self.assertFalse(stale_part.exists())
+
+    def test_file_init_rejects_boolean_or_malformed_fields(self) -> None:
+        """Receiver must reject boolean/negative numbers and traversal session IDs."""
+        for bad_msg in (
+            {
+                "type": "FILE_INIT",
+                "session_id": "sid_bool_size",
+                "sender": "alice",
+                "filename": "ok.bin",
+                "filesize": True,
+                "sha256": "0" * 64,
+                "total_chunks": 1,
+            },
+            {
+                "type": "FILE_INIT",
+                "session_id": "sid_bool_chunks",
+                "sender": "alice",
+                "filename": "ok.bin",
+                "filesize": 10,
+                "sha256": "0" * 64,
+                "total_chunks": False,
+            },
+        ):
+            self.sent_frames.clear()
+            self.receiver.handle_incoming_message(bad_msg, b"")
+            self.assertEqual(self.sent_frames[-1][0]["type"], "FILE_ERROR")
+            self.assertIn("reason", self.sent_frames[-1][0])
+
+        self.sent_frames.clear()
+        self.receiver.handle_incoming_message(
+            {
+                "type": "FILE_INIT",
+                "session_id": "../bad",
+                "sender": "alice",
+                "filename": "ok.bin",
+                "filesize": 10,
+                "sha256": "0" * 64,
+                "total_chunks": 1,
+            },
+            b"",
+        )
+        self.assertEqual(self.sent_frames, [])
+        self.assertEqual(list(self.download_dir.iterdir()), [])
+
+    def test_file_chunk_rejects_boolean_chunk_index(self) -> None:
+        """Boolean chunk_index must fail validation cleanly instead of acting as 0/1."""
+        self.receiver.handle_incoming_message(
+            {
+                "type": "FILE_INIT",
+                "session_id": "sid_bool_idx",
+                "sender": "alice",
+                "filename": "sample.bin",
+                "filesize": 4,
+                "sha256": hashlib.sha256(b"abcd").hexdigest(),
+                "total_chunks": 1,
+            },
+            b"",
+        )
+        part_path = self.download_dir / ".sid_bool_idx_sample.bin.part"
+        self.assertTrue(part_path.exists())
+
+        self.sent_frames.clear()
+        self.receiver.handle_incoming_message(
+            {
+                "type": "FILE_CHUNK",
+                "session_id": "sid_bool_idx",
+                "chunk_index": False,
+            },
+            b"abcd",
+        )
+        self.assertEqual(self.sent_frames[-1][0]["type"], "FILE_ERROR")
+        self.assertIn("Chunk sequence error", self.sent_frames[-1][0]["reason"])
+        self.assertFalse(part_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

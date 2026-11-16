@@ -9,7 +9,12 @@ import os
 import threading
 from typing import BinaryIO, Callable, Any
 
-from transfer.integrity import verify_file
+from transfer.integrity import (
+    is_valid_transfer_id,
+    parse_non_negative_int,
+    sanitize_filename,
+    verify_file,
+)
 
 SendFrameCallable = Callable[[dict[str, Any], bytes], None]
 ProgressCallback = Callable[[str, str, int, int], None]
@@ -62,8 +67,8 @@ class FileReceiver:
         """Remove leftover .part files from previous crashed sessions without disturbing active downloads."""
         try:
             for p in self.download_dir.iterdir():
-                if p.is_file() and (p.name.endswith(".part") or ".part" in p.name):
-                    # Check if file is currently open / in-use by another active process
+                if p.is_file() and p.name.endswith(".part"):
+                    # Check if file is currently locked by another active process on POSIX.
                     try:
                         import fcntl
                         try:
@@ -74,13 +79,8 @@ class FileReceiver:
                             # File is locked by an active process, do not delete!
                             continue
                     except ImportError:
-                        # On Windows, test if file can be opened for writing without sharing violation
-                        try:
-                            with open(p, "a+b") as test_f:
-                                pass
-                        except (PermissionError, OSError):
-                            # File is currently held open by another process, do not delete!
-                            continue
+                        # On Windows, an actively open handle rejects unlink() with PermissionError.
+                        pass
 
                     try:
                         p.unlink(missing_ok=True)
@@ -111,29 +111,29 @@ class FileReceiver:
     def _handle_file_init(self, header: dict[str, Any]) -> None:
         """Initialize a new temporary download session and acknowledge with FILE_ACCEPT."""
         session_id = header.get("session_id")
-        sender = header.get("sender", "unknown")
-        filename = header.get("filename", "unnamed_file")
-        filesize = int(header.get("filesize", 0))
-        sha256 = header.get("sha256", "")
-        total_chunks = int(header.get("total_chunks", 0))
+        if not is_valid_transfer_id(session_id):
+            return
 
-        if (
-            not session_id
-            or not isinstance(session_id, str)
-            or not session_id.strip()
-            or "/" in session_id
-            or "\\" in session_id
-            or ".." in session_id
-            or ":" in session_id
-            or "\x00" in session_id
-        ):
+        raw_sender = header.get("sender", "unknown")
+        sender = raw_sender if isinstance(raw_sender, str) else "unknown"
+        raw_sha256 = header.get("sha256", "")
+        sha256 = raw_sha256 if isinstance(raw_sha256, str) else ""
+
+        try:
+            filesize = parse_non_negative_int(header.get("filesize", 0), "filesize")
+            total_chunks = parse_non_negative_int(header.get("total_chunks", 0), "total_chunks")
+        except ValueError as error:
+            try:
+                self.send_frame(
+                    {"type": "FILE_ERROR", "session_id": session_id, "reason": str(error)},
+                    b"",
+                )
+            except Exception:
+                pass
             return
 
         # Sanitize filename against directory traversal attacks (POSIX & Windows separators)
-        raw_name = str(filename).replace("\\", "/") if isinstance(filename, str) else ""
-        safe_name = Path(raw_name).name.strip()
-        if not safe_name or safe_name in {".", ".."} or ":" in safe_name or "\x00" in safe_name:
-            safe_name = "unnamed_file"
+        safe_name = sanitize_filename(header.get("filename", "unnamed_file"))
         temp_filename = f".{session_id}_{safe_name}.part"
         temp_path = self.download_dir / temp_filename
         try:
@@ -192,7 +192,11 @@ class FileReceiver:
             if not session:
                 return
 
-            if chunk_index != session.next_chunk_index:
+            if (
+                not isinstance(chunk_index, int)
+                or isinstance(chunk_index, bool)
+                or chunk_index != session.next_chunk_index
+            ):
                 self._abort_session_unlocked(
                     session_id,
                     f"Chunk sequence error: expected {session.next_chunk_index}, got {chunk_index}",
@@ -311,10 +315,7 @@ class FileReceiver:
 
     def _resolve_final_path(self, filename: str) -> Path:
         """Avoid overwriting existing files by appending incremental counters (e.g. file (1).txt)."""
-        raw_name = str(filename).replace("\\", "/") if isinstance(filename, str) else ""
-        safe_name = Path(raw_name).name.strip()
-        if not safe_name or safe_name in {".", ".."} or ":" in safe_name or "\x00" in safe_name:
-            safe_name = "unnamed_file"
+        safe_name = sanitize_filename(filename)
         base_dir = self.download_dir.resolve()
         candidate = self.download_dir / safe_name
         if not candidate.resolve().is_relative_to(base_dir):

@@ -13,7 +13,15 @@ _ROOT = str(Path(__file__).resolve().parent.parent.parent)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from transfer.integrity import calculate_sha256, get_file_metadata, verify_file
+from transfer.integrity import (
+    calculate_sha256,
+    get_file_metadata,
+    is_safe_filename,
+    is_valid_transfer_id,
+    parse_non_negative_int,
+    sanitize_filename,
+    verify_file,
+)
 
 
 class TestIntegrity(unittest.TestCase):
@@ -77,6 +85,31 @@ class TestIntegrity(unittest.TestCase):
         is_valid, msg = verify_file(self.file_path, len(self.content), "a" * 64)
         self.assertFalse(is_valid)
         self.assertIn("hash mismatch", msg)
+
+    def test_is_valid_transfer_id_accepts_and_rejects(self) -> None:
+        for valid_id in ("abc", "sid-123_XYZ", "0" * 32):
+            self.assertTrue(is_valid_transfer_id(valid_id))
+        for bad_id in ("", "   ", "../bad", "a/b", "a\\b", "a:b", "bad id", None, 123):
+            self.assertFalse(is_valid_transfer_id(bad_id))
+
+    def test_is_safe_filename_and_sanitize_filename(self) -> None:
+        self.assertTrue(is_safe_filename("report_final-2026.pdf"))
+        for bad_name in ("", "  ", ".", "..", "../a.txt", "sub/a.txt", "C:\\x.exe", "bad\x00name", 123):
+            self.assertFalse(is_safe_filename(bad_name))
+
+        self.assertEqual(sanitize_filename("..\\..\\win.ini"), "win.ini")
+        self.assertEqual(sanitize_filename(".."), "unnamed_file")
+        self.assertEqual(sanitize_filename("."), "unnamed_file")
+        self.assertEqual(sanitize_filename(None), "unnamed_file")
+
+    def test_parse_non_negative_int_rejects_bool_negative_and_invalid(self) -> None:
+        self.assertEqual(parse_non_negative_int(0, "filesize"), 0)
+        self.assertEqual(parse_non_negative_int(42, "filesize"), 42)
+        self.assertEqual(parse_non_negative_int("15", "filesize"), 15)
+
+        for bad_val in (True, False, -1, -100, "abc", None):
+            with self.assertRaises(ValueError):
+                parse_non_negative_int(bad_val, "filesize")
 
 
 if __name__ == "__main__":

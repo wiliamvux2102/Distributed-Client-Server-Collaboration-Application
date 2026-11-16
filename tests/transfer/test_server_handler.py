@@ -346,6 +346,97 @@ class TestServerHandler(unittest.TestCase):
             self.assertEqual(len(self.sent_messages), 1)
             self.assertEqual(self.sent_messages[0][1]["code"], "ERR_INVALID_METADATA")
 
+    def test_init_rejects_boolean_filesize_and_whitespace_receiver(self) -> None:
+        """FILE_INIT must reject boolean filesize/total_chunks and whitespace-only receiver."""
+        for bad_msg in (
+            {
+                "type": "FILE_INIT",
+                "session_id": "sid_bool",
+                "sender": "alice",
+                "receiver": "bob",
+                "filename": "ok.txt",
+                "filesize": True,
+            },
+            {
+                "type": "FILE_INIT",
+                "session_id": "sid_ws_recv",
+                "sender": "alice",
+                "receiver": "   ",
+                "filename": "ok.txt",
+                "filesize": 10,
+            },
+        ):
+            self.sent_messages.clear()
+            self.handler.handle_message("alice", bad_msg, b"")
+            self.assertEqual(len(self.sent_messages), 1)
+            self.assertEqual(self.sent_messages[0][1]["code"], "ERR_INVALID_METADATA")
+
+    def test_terminal_relay_pops_session_so_later_disconnect_emits_no_error(self) -> None:
+        """Once FILE_RESULT/FILE_ERROR is relayed, disconnect must not emit ERR_PEER_DISCONNECTED."""
+        self.handler.handle_message(
+            "alice",
+            {
+                "type": "FILE_INIT",
+                "session_id": "sid_done",
+                "sender": "alice",
+                "receiver": "bob",
+                "filename": "ok.txt",
+                "filesize": 5,
+            },
+            b"",
+        )
+        self.handler.handle_message("bob", {"type": "FILE_ACCEPT", "session_id": "sid_done"}, b"")
+        self.sent_messages.clear()
+
+        self.handler.handle_message(
+            "bob",
+            {"type": "FILE_RESULT", "session_id": "sid_done", "verified": True},
+            b"",
+        )
+        self.assertEqual(len(self.sent_messages), 1)
+        self.assertEqual(self.sent_messages[0][1]["type"], "FILE_RESULT")
+
+        self.sent_messages.clear()
+        self.handler.on_client_disconnect("alice")
+        self.assertEqual(self.sent_messages, [])
+
+    def test_send_to_user_bridge_isolates_value_error_vs_oserror(self) -> None:
+        """ValueError during send must not evict recipient; OSError must evict and notify handler."""
+        import threading
+        from unittest.mock import Mock, patch
+        from infrastructure.user_registry import UserRegistry
+        from transfer.server_handler import _send_to_user_bridge
+
+        registry = UserRegistry()
+        sock = Mock()
+        registry.register("bob", sock, ("127.0.0.1", 50000), threading.Lock(), "tok")
+        ft_handler = FileTransferServerHandler(
+            send_to_user_fn=lambda u, m: True,
+            is_user_online_fn=lambda u: registry.get_session(u) is not None,
+        )
+
+        # ValueError (e.g. non-JSON/oversized payload): return False, keep bob online
+        with (
+            patch("infrastructure.user_registry.user_registry", registry),
+            patch("transfer.server_handler.file_transfer_server_handler", ft_handler),
+            patch("common.protocol.send_message", side_effect=ValueError("bad frame")),
+            patch.object(ft_handler, "on_client_disconnect") as disc_spy,
+        ):
+            self.assertFalse(_send_to_user_bridge("bob", {"type": "PING"}))
+            self.assertIsNotNone(registry.get_session("bob"))
+            disc_spy.assert_not_called()
+
+        # OSError (broken socket): remove bob and trigger on_client_disconnect
+        with (
+            patch("infrastructure.user_registry.user_registry", registry),
+            patch("transfer.server_handler.file_transfer_server_handler", ft_handler),
+            patch("common.protocol.send_message", side_effect=OSError("broken pipe")),
+            patch.object(ft_handler, "on_client_disconnect") as disc_spy,
+        ):
+            self.assertFalse(_send_to_user_bridge("bob", {"type": "PING"}))
+            self.assertIsNone(registry.get_session("bob"))
+            disc_spy.assert_called_once_with("bob")
+
 
 if __name__ == "__main__":
     unittest.main()
