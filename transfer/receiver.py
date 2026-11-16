@@ -9,6 +9,7 @@ import os
 import threading
 from typing import BinaryIO, Callable, Any
 
+from common.app_config import DEFAULT_DOWNLOADS_DIR
 from transfer.integrity import (
     is_valid_transfer_id,
     parse_non_negative_int,
@@ -45,7 +46,7 @@ class FileReceiver:
         self,
         username: str,
         send_frame_fn: SendFrameCallable,
-        download_dir: str | Path = "downloads",
+        download_dir: str | Path = DEFAULT_DOWNLOADS_DIR,
         on_progress: ProgressCallback | None = None,
         on_complete: CompleteCallback | None = None,
         on_error: ErrorCallback | None = None,

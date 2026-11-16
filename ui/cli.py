@@ -278,7 +278,7 @@ def main() -> None:
                     f"[FILE] Bắt đầu gửi '{Path(queued_path).name}' tới {len(peers)} người: {', '.join(peers)}"
                 )
                 for peer in peers:
-                    ft_manager.send_file(peer, queued_path)
+                    ft_manager.send_file(peer, queued_path, is_broadcast=True)
                 return
 
             _handle_online_list(message)

@@ -11,6 +11,7 @@ import time
 import uuid
 from typing import Callable, Any
 
+from common.app_config import DEFAULT_DOWNLOADS_DIR
 from transfer.integrity import (
     DEFAULT_CHUNK_SIZE,
     get_file_metadata,
@@ -41,6 +42,7 @@ class UploadSession:
     total_chunks: int
     sent_bytes: int = 0
     started: bool = False
+    is_broadcast: bool = False
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
@@ -66,7 +68,12 @@ class FileSender:
         self._sessions: dict[str, UploadSession] = {}
         self._lock = threading.Lock()
 
-    def start_transfer(self, receiver_username: str, file_path: str | Path) -> str:
+    def start_transfer(
+        self,
+        receiver_username: str,
+        file_path: str | Path,
+        is_broadcast: bool = False,
+    ) -> str:
         """Extract metadata, initialize session, and dispatch FILE_INIT."""
         path = Path(file_path)
         meta = get_file_metadata(path, self.chunk_size)
@@ -77,6 +84,7 @@ class FileSender:
             sender=self.username,
             receiver=receiver_username,
             file_path=path,
+            is_broadcast=is_broadcast,
             **meta,
         )
 
@@ -90,6 +98,8 @@ class FileSender:
             "receiver": receiver_username,
             **meta,
         }
+        if is_broadcast:
+            header["is_broadcast"] = True
 
         try:
             self.send_frame(header, b"")
@@ -102,9 +112,14 @@ class FileSender:
 
         return session_id
 
-    def send_file(self, receiver_username: str, file_path: str | Path) -> str:
+    def send_file(
+        self,
+        receiver_username: str,
+        file_path: str | Path,
+        is_broadcast: bool = False,
+    ) -> str:
         """Start an outgoing file transfer."""
-        return self.start_transfer(receiver_username, file_path)
+        return self.start_transfer(receiver_username, file_path, is_broadcast=is_broadcast)
 
     def handle_incoming_message(self, header: dict[str, Any], payload: bytes = b"") -> None:
         """Process control messages (FILE_ACCEPT, FILE_RESULT, FILE_ERROR)."""
@@ -262,6 +277,7 @@ class ClientFileTransferManager:
         print_fn: Callable[[str], None],
         status_update_fn: Callable[[], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
+        download_dir: str | Path = DEFAULT_DOWNLOADS_DIR,
     ) -> None:
         self.username = username
         self.send_fn = send_fn
@@ -282,7 +298,7 @@ class ClientFileTransferManager:
         self.receiver = FileReceiver(
             username=username,
             send_frame_fn=self._send_frame,
-            download_dir="downloads",
+            download_dir=download_dir,
             on_progress=self._on_progress,
             on_complete=self._on_complete_recv,
             on_error=self._on_error,
@@ -340,11 +356,13 @@ class ClientFileTransferManager:
                 filename = header.get("filename", "unnamed_file")
                 peer = header.get("receiver", "")
                 total = int(header.get("filesize", 0))
+                is_broadcast = bool(header.get("is_broadcast", False))
                 with self._lock:
                     self._active_transfers[session_id] = {
                         "filename": filename,
                         "peer": peer,
                         "direction": "upload",
+                        "is_broadcast": is_broadcast,
                         "current": 0,
                         "total": total,
                     }
@@ -355,6 +373,7 @@ class ClientFileTransferManager:
                     "direction": "upload",
                     "peer": peer,
                     "filename": filename,
+                    "is_broadcast": is_broadcast,
                     "current": 0,
                     "total": total,
                 })
@@ -425,11 +444,13 @@ class ClientFileTransferManager:
                 filename = sanitize_filename(message.get("filename", "unnamed_file"))
                 raw_sender = message.get("sender", "unknown")
                 sender = raw_sender if isinstance(raw_sender, str) else "unknown"
+                is_broadcast = bool(message.get("is_broadcast", False))
                 with self._lock:
                     self._active_transfers[session_id] = {
                         "filename": filename,
                         "peer": sender,
                         "direction": "download",
+                        "is_broadcast": is_broadcast,
                         "current": 0,
                         "total": filesize,
                     }
@@ -440,6 +461,7 @@ class ClientFileTransferManager:
                     "direction": "download",
                     "peer": sender,
                     "filename": filename,
+                    "is_broadcast": is_broadcast,
                     "current": 0,
                     "total": filesize,
                 })
@@ -460,7 +482,12 @@ class ClientFileTransferManager:
         ):
             register_fn(msg_type, self.handle_incoming)
 
-    def send_file(self, recipient: str, filepath: str | Path) -> None:
+    def send_file(
+        self,
+        recipient: str,
+        filepath: str | Path,
+        is_broadcast: bool = False,
+    ) -> None:
         """CLI entrypoint for the /sendfile command."""
         try:
             cleaned_path = str(filepath).strip("\"' ")
@@ -471,7 +498,7 @@ class ClientFileTransferManager:
             if not path.is_file():
                 self.print_fn(f"[ERROR] File not found: {path}")
                 return
-            self.sender.start_transfer(recipient, path)
+            self.sender.start_transfer(recipient, path, is_broadcast=is_broadcast)
         except Exception as error:
             self.print_fn(f"[FILE ERROR] {error}")
 
@@ -483,6 +510,7 @@ class ClientFileTransferManager:
                     "filename": filename,
                     "peer": "",
                     "direction": "upload",
+                    "is_broadcast": False,
                     "current": current,
                     "total": total,
                 }
@@ -492,6 +520,7 @@ class ClientFileTransferManager:
                 info["total"] = total
             direction = info["direction"]
             peer = info.get("peer", "")
+            is_broadcast = bool(info.get("is_broadcast", False))
 
         self._trigger_update()
         self._emit_event({
@@ -500,6 +529,7 @@ class ClientFileTransferManager:
             "direction": direction,
             "peer": peer,
             "filename": filename,
+            "is_broadcast": is_broadcast,
             "current": current,
             "total": total,
         })
@@ -510,12 +540,14 @@ class ClientFileTransferManager:
         self._trigger_update()
         peer = info.get("peer", "") if info else ""
         total = info.get("total", 0) if info else 0
+        is_broadcast = bool(info.get("is_broadcast", False)) if info else False
         self._emit_event({
             "event": "completed",
             "session_id": session_id,
             "direction": "upload",
             "peer": peer,
             "filename": filename,
+            "is_broadcast": is_broadcast,
             "current": total,
             "total": total,
             "saved_path": "",
@@ -531,12 +563,14 @@ class ClientFileTransferManager:
         self._trigger_update()
         peer = info.get("peer", "") if info else ""
         total = info.get("total", 0) if info else 0
+        is_broadcast = bool(info.get("is_broadcast", False)) if info else False
         self._emit_event({
             "event": "completed",
             "session_id": session_id,
             "direction": "download",
             "peer": peer,
             "filename": filename,
+            "is_broadcast": is_broadcast,
             "current": total,
             "total": total,
             "saved_path": saved_path,
@@ -554,12 +588,14 @@ class ClientFileTransferManager:
         self._trigger_update()
         direction = info.get("direction", "upload") if info else "upload"
         peer = info.get("peer", "") if info else ""
+        is_broadcast = bool(info.get("is_broadcast", False)) if info else False
         self._emit_event({
             "event": "failed",
             "session_id": session_id,
             "direction": direction,
             "peer": peer,
             "filename": filename,
+            "is_broadcast": is_broadcast,
             "error": err,
         })
         self.print_fn(f"[FILE ERROR] {filename}: {err}")

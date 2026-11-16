@@ -5,6 +5,7 @@ Server-side file transfer routing and session management.
 from __future__ import annotations
 import base64
 from dataclasses import dataclass, field
+import logging
 import socket
 import threading
 import time
@@ -16,6 +17,8 @@ from transfer.integrity import (
     is_valid_transfer_id,
     parse_non_negative_int,
 )
+
+logger = logging.getLogger(__name__)
 
 SendToUserCallable = Callable[[str, dict[str, Any], bytes], bool]
 IsUserOnlineCallable = Callable[[str], bool]
@@ -121,6 +124,13 @@ class FileTransferServerHandler:
                     sender_user, session_id, "ERR_INVALID_METADATA", f"Invalid total_chunks: {raw_total_chunks}"
                 )
                 return
+
+        raw_is_broadcast = header.get("is_broadcast", False)
+        if not isinstance(raw_is_broadcast, bool):
+            self._send_error(
+                sender_user, session_id, "ERR_INVALID_METADATA", "Invalid is_broadcast flag."
+            )
+            return
 
         # Enforce sender authenticity to prevent username spoofing
         header["sender"] = sender_user
@@ -275,7 +285,7 @@ class FileTransferServerHandler:
                         b"",
                     )
                 except Exception:
-                    pass
+                    logger.exception("[TRANSFER] Lỗi gửi ERR_SESSION_TIMEOUT tới '%s'.", user)
 
         return [s.session_id for s in stale_sessions]
 
@@ -303,7 +313,7 @@ class FileTransferServerHandler:
                     b"",
                 )
             except Exception:
-                pass
+                logger.exception("[TRANSFER] Lỗi gửi ERR_PEER_DISCONNECTED tới '%s'.", other_user)
 
 
 # ---------------------------------------------------------------------------
@@ -327,8 +337,13 @@ def _send_to_user_bridge(target_username: str, header: dict[str, Any], payload: 
         with session.send_lock:
             send_message(session.connection, message)
         return True
-    except ValueError:
+    except ValueError as error:
         # Payload serialization/size error must not terminate an unrelated receiver connection.
+        logger.warning(
+            "[TRANSFER] Bỏ qua khung file không tuần tự hóa được tới '%s': %s",
+            target_username,
+            error,
+        )
         return False
     except OSError:
         try:

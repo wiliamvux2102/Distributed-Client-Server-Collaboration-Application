@@ -496,6 +496,54 @@ class TestSender(unittest.TestCase):
         finally:
             mgr.cleanup("test cleanup")
 
+    def test_broadcast_file_transfer_propagates_is_broadcast_flag(self) -> None:
+        alice_events: list[dict] = []
+        bob_events: list[dict] = []
+        wire_headers: list[dict] = []
+        clients: dict[str, ClientFileTransferManager] = {}
+
+        def send_network(source_user: str, message: dict) -> None:
+            wire_headers.append(dict(message))
+            target = "bob" if source_user == "alice" else "alice"
+            clients[target].handle_incoming(dict(message))
+
+        alice_mgr = ClientFileTransferManager(
+            username="alice",
+            send_fn=lambda msg: send_network("alice", msg),
+            print_fn=lambda _t: None,
+            on_event=alice_events.append,
+        )
+        bob_mgr = ClientFileTransferManager(
+            username="bob",
+            send_fn=lambda msg: send_network("bob", msg),
+            print_fn=lambda _t: None,
+            on_event=bob_events.append,
+        )
+        bob_mgr.receiver.download_dir = self.test_dir / "dl_bc"
+        bob_mgr.receiver.download_dir.mkdir(exist_ok=True)
+        clients["alice"] = alice_mgr
+        clients["bob"] = bob_mgr
+
+        try:
+            alice_mgr.send_file("bob", self.file_path, is_broadcast=True)
+            deadline = time.time() + 3.0
+            while time.time() < deadline:
+                if (
+                    any(e.get("event") == "completed" for e in alice_events)
+                    and any(e.get("event") == "completed" for e in bob_events)
+                ):
+                    break
+                time.sleep(0.02)
+
+            init_hdr = next(h for h in wire_headers if h.get("type") == "FILE_INIT")
+            self.assertTrue(init_hdr.get("is_broadcast"))
+            self.assertTrue(all(e.get("is_broadcast") is True for e in alice_events))
+            self.assertTrue(all(e.get("is_broadcast") is True for e in bob_events))
+            self.assertTrue(any(e.get("event") == "completed" for e in bob_events))
+        finally:
+            alice_mgr.cleanup("done")
+            bob_mgr.cleanup("done")
+
 
 if __name__ == "__main__":
     unittest.main()

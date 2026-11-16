@@ -60,6 +60,36 @@ class TestServerHandler(unittest.TestCase):
         target, h, p = self.sent_messages[0]
         self.assertEqual(target, "bob")
         self.assertEqual(h["type"], "FILE_INIT")
+
+    def test_handle_init_preserves_is_broadcast_and_rejects_non_bool(self) -> None:
+        valid_bc = {
+            "type": "FILE_INIT",
+            "session_id": "sid_bc_ok",
+            "sender": "alice",
+            "receiver": "bob",
+            "filename": "doc.pdf",
+            "filesize": 100,
+            "is_broadcast": True,
+        }
+        self.handler.handle_message("alice", valid_bc, b"")
+        self.assertEqual(len(self.sent_messages), 1)
+        target, h, _ = self.sent_messages[0]
+        self.assertEqual(target, "bob")
+        self.assertTrue(h.get("is_broadcast"))
+
+        self.sent_messages.clear()
+        for bad_val in ("true", 1):
+            bad_bc = {
+                "type": "FILE_INIT",
+                "session_id": f"sid_bc_bad_{bad_val}",
+                "sender": "alice",
+                "receiver": "bob",
+                "filename": "doc.pdf",
+                "filesize": 100,
+                "is_broadcast": bad_val,
+            }
+            self.handler.handle_message("alice", bad_bc, b"")
+            self.assertEqual(self.sent_messages[-1][1]["code"], "ERR_INVALID_METADATA")
         self.assertEqual(h["sender"], "alice")
 
     def test_handle_init_offline_recipient_returns_user_offline_error(self) -> None:
@@ -116,6 +146,36 @@ class TestServerHandler(unittest.TestCase):
         target, h, p = self.sent_messages[0]
         self.assertEqual(target, "bob")
         self.assertEqual(h["type"], "FILE_INIT")
+
+    def test_handle_init_preserves_is_broadcast_and_rejects_non_bool(self) -> None:
+        valid_bc = {
+            "type": "FILE_INIT",
+            "session_id": "sid_bc_ok",
+            "sender": "alice",
+            "receiver": "bob",
+            "filename": "doc.pdf",
+            "filesize": 100,
+            "is_broadcast": True,
+        }
+        self.handler.handle_message("alice", valid_bc, b"")
+        self.assertEqual(len(self.sent_messages), 1)
+        target, h, _ = self.sent_messages[0]
+        self.assertEqual(target, "bob")
+        self.assertTrue(h.get("is_broadcast"))
+
+        self.sent_messages.clear()
+        for bad_val in ("true", 1):
+            bad_bc = {
+                "type": "FILE_INIT",
+                "session_id": f"sid_bc_bad_{bad_val}",
+                "sender": "alice",
+                "receiver": "bob",
+                "filename": "doc.pdf",
+                "filesize": 100,
+                "is_broadcast": bad_val,
+            }
+            self.handler.handle_message("alice", bad_bc, b"")
+            self.assertEqual(self.sent_messages[-1][1]["code"], "ERR_INVALID_METADATA")
 
     def test_relay_chunk_to_correct_target(self) -> None:
         sid = "sid_relay"
