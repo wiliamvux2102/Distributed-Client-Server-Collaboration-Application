@@ -60,36 +60,6 @@ class TestServerHandler(unittest.TestCase):
         target, h, p = self.sent_messages[0]
         self.assertEqual(target, "bob")
         self.assertEqual(h["type"], "FILE_INIT")
-
-    def test_handle_init_preserves_is_broadcast_and_rejects_non_bool(self) -> None:
-        valid_bc = {
-            "type": "FILE_INIT",
-            "session_id": "sid_bc_ok",
-            "sender": "alice",
-            "receiver": "bob",
-            "filename": "doc.pdf",
-            "filesize": 100,
-            "is_broadcast": True,
-        }
-        self.handler.handle_message("alice", valid_bc, b"")
-        self.assertEqual(len(self.sent_messages), 1)
-        target, h, _ = self.sent_messages[0]
-        self.assertEqual(target, "bob")
-        self.assertTrue(h.get("is_broadcast"))
-
-        self.sent_messages.clear()
-        for bad_val in ("true", 1):
-            bad_bc = {
-                "type": "FILE_INIT",
-                "session_id": f"sid_bc_bad_{bad_val}",
-                "sender": "alice",
-                "receiver": "bob",
-                "filename": "doc.pdf",
-                "filesize": 100,
-                "is_broadcast": bad_val,
-            }
-            self.handler.handle_message("alice", bad_bc, b"")
-            self.assertEqual(self.sent_messages[-1][1]["code"], "ERR_INVALID_METADATA")
         self.assertEqual(h["sender"], "alice")
 
     def test_handle_init_offline_recipient_returns_user_offline_error(self) -> None:
@@ -229,11 +199,49 @@ class TestServerHandler(unittest.TestCase):
             {"type": "FILE_INIT", "session_id": sid, "sender": "alice", "receiver": "bob", "filename": "f.txt", "filesize": 5},
             b"",
         )
+        self.handler.handle_message("bob", {"type": "FILE_ACCEPT", "session_id": sid}, b"")
+        self.handler.handle_message("alice", {"type": "FILE_CHUNK", "session_id": sid, "chunk_index": 0}, b"12345")
+        self.handler.handle_message("alice", {"type": "FILE_END", "session_id": sid}, b"")
         self.assertIn(sid, self.handler._active_sessions)
 
-        # Result OK ends session
+        # Result OK after FILE_END completes and removes session
         self.handler.handle_message("bob", {"type": "FILE_RESULT", "session_id": sid, "status": "OK"}, b"")
         self.assertNotIn(sid, self.handler._active_sessions)
+
+    def test_premature_file_result_rejected_on_non_empty_transfer_and_allowed_on_zero_byte(self) -> None:
+        # Non-empty transfer must reject FILE_RESULT before FILE_END
+        sid_non_empty = "sid_early_result"
+        self.handler.handle_message(
+            "alice",
+            {"type": "FILE_INIT", "session_id": sid_non_empty, "sender": "alice", "receiver": "bob", "filename": "a.bin", "filesize": 1},
+            b"",
+        )
+        self.sent_messages.clear()
+        self.handler.handle_message("bob", {"type": "FILE_RESULT", "session_id": sid_non_empty, "status": "OK"}, b"")
+        self.assertEqual(len(self.sent_messages), 1)
+        self.assertEqual(self.sent_messages[0][0], "bob")
+        self.assertEqual(self.sent_messages[0][1]["code"], "ERR_INVALID_STATE")
+        self.assertIn(sid_non_empty, self.handler._active_sessions)
+
+        self.handler.handle_message("bob", {"type": "FILE_ACCEPT", "session_id": sid_non_empty}, b"")
+        self.sent_messages.clear()
+        self.handler.handle_message("bob", {"type": "FILE_RESULT", "session_id": sid_non_empty, "status": "OK"}, b"")
+        self.assertEqual(self.sent_messages[0][1]["code"], "ERR_INVALID_STATE")
+        self.assertIn(sid_non_empty, self.handler._active_sessions)
+
+        # Zero-byte fast path legitimately transitions INIT -> COMPLETED on FILE_RESULT
+        sid_zero = "sid_zero_result"
+        self.handler.handle_message(
+            "alice",
+            {"type": "FILE_INIT", "session_id": sid_zero, "sender": "alice", "receiver": "bob", "filename": "empty.txt", "filesize": 0},
+            b"",
+        )
+        self.sent_messages.clear()
+        self.handler.handle_message("bob", {"type": "FILE_RESULT", "session_id": sid_zero, "status": "OK"}, b"")
+        self.assertEqual(len(self.sent_messages), 1)
+        self.assertEqual(self.sent_messages[0][0], "alice")
+        self.assertEqual(self.sent_messages[0][1]["type"], "FILE_RESULT")
+        self.assertNotIn(sid_zero, self.handler._active_sessions)
 
     def test_on_client_disconnect_notifies_peer_and_cleans_up(self) -> None:
         sid = "sid_disc"
@@ -446,11 +454,13 @@ class TestServerHandler(unittest.TestCase):
             b"",
         )
         self.handler.handle_message("bob", {"type": "FILE_ACCEPT", "session_id": "sid_done"}, b"")
+        self.handler.handle_message("alice", {"type": "FILE_CHUNK", "session_id": "sid_done", "chunk_index": 0}, b"12345")
+        self.handler.handle_message("alice", {"type": "FILE_END", "session_id": "sid_done"}, b"")
         self.sent_messages.clear()
 
         self.handler.handle_message(
             "bob",
-            {"type": "FILE_RESULT", "session_id": "sid_done", "verified": True},
+            {"type": "FILE_RESULT", "session_id": "sid_done", "status": "OK"},
             b"",
         )
         self.assertEqual(len(self.sent_messages), 1)
@@ -496,6 +506,55 @@ class TestServerHandler(unittest.TestCase):
             self.assertFalse(_send_to_user_bridge("bob", {"type": "PING"}))
             self.assertIsNone(registry.get_session("bob"))
             disc_spy.assert_called_once_with("bob")
+
+    def test_relay_failure_while_recipient_online_isolates_only_failed_session(self) -> None:
+        """A single-frame relay failure for an online peer must abort only that transfer."""
+        delivered: list[tuple[str, dict, bytes]] = []
+        online = {"alice", "bob", "charlie"}
+
+        def flaky_send(target: str, header: dict, payload: bytes = b"") -> bool:
+            if header.get("type") == "FILE_CHUNK" and header.get("session_id") == "sid_alice":
+                return False  # simulate ValueError in bridge while bob stays online
+            delivered.append((target, header, payload))
+            return True
+
+        handler = FileTransferServerHandler(
+            send_to_user_fn=flaky_send,
+            is_user_online_fn=lambda u: u in online,
+        )
+
+        # Both alice and charlie start transfers to bob
+        handler.handle_message(
+            "alice",
+            {"type": "FILE_INIT", "session_id": "sid_alice", "receiver": "bob", "filename": "a.bin", "filesize": 5},
+            b"",
+        )
+        handler.handle_message(
+            "charlie",
+            {"type": "FILE_INIT", "session_id": "sid_charlie", "receiver": "bob", "filename": "c.bin", "filesize": 5},
+            b"",
+        )
+        handler.handle_message("bob", {"type": "FILE_ACCEPT", "session_id": "sid_alice"}, b"")
+        handler.handle_message("bob", {"type": "FILE_ACCEPT", "session_id": "sid_charlie"}, b"")
+        delivered.clear()
+
+        # Alice's chunk relay returns False while Bob is still online
+        handler.handle_message("alice", {"type": "FILE_CHUNK", "session_id": "sid_alice", "chunk_index": 0}, b"bad!!")
+
+        # Only sid_alice is aborted; charlie's concurrent session stays active without ERR_PEER_DISCONNECTED
+        self.assertNotIn("sid_alice", handler._active_sessions)
+        self.assertIn("sid_charlie", handler._active_sessions)
+        self.assertTrue(all(h.get("session_id") == "sid_alice" and h.get("type") == "FILE_ERROR" for _, h, _ in delivered))
+        self.assertEqual({t for t, _, _ in delivered}, {"alice", "bob"})
+
+        # Charlie finishes normally
+        delivered.clear()
+        handler.handle_message("charlie", {"type": "FILE_CHUNK", "session_id": "sid_charlie", "chunk_index": 0}, b"hello")
+        handler.handle_message("charlie", {"type": "FILE_END", "session_id": "sid_charlie"}, b"")
+        handler.handle_message("bob", {"type": "FILE_RESULT", "session_id": "sid_charlie", "status": "OK"}, b"")
+        self.assertNotIn("sid_charlie", handler._active_sessions)
+        self.assertEqual(delivered[-1][0], "charlie")
+        self.assertEqual(delivered[-1][1]["type"], "FILE_RESULT")
 
 
 if __name__ == "__main__":

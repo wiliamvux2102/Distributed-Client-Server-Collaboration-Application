@@ -141,7 +141,11 @@ def discover_server() -> tuple[str, int]:
                     continue
 
                 resp_version = response.get("protocol_version")
-                if isinstance(resp_version, bool) or resp_version != PROTOCOL_VERSION:
+                if (
+                    isinstance(resp_version, bool)
+                    or not isinstance(resp_version, int)
+                    or resp_version != PROTOCOL_VERSION
+                ):
                     continue
 
                 tcp_port = response.get("tcp_port")

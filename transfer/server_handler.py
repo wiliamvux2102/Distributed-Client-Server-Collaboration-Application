@@ -235,6 +235,12 @@ class FileTransferServerHandler:
                 if from_user != session.receiver:
                     error_code = "ERR_UNAUTHORIZED_ROLE"
                     error_reason = f"Only receiver '{session.receiver}' can send FILE_RESULT."
+                elif session.filesize == 0 and session.state not in ("INIT", "WAITING_RESULT"):
+                    error_code = "ERR_INVALID_STATE"
+                    error_reason = f"Cannot send FILE_RESULT in state '{session.state}'."
+                elif session.filesize > 0 and session.state != "WAITING_RESULT":
+                    error_code = "ERR_INVALID_STATE"
+                    error_reason = f"Cannot send FILE_RESULT in state '{session.state}' before FILE_END."
                 else:
                     session.state = "COMPLETED"
                     target_user = session.sender
@@ -258,7 +264,17 @@ class FileTransferServerHandler:
         if target_user is not None:
             success = self.send_to_user(target_user, header, payload)
             if not success:
-                self.on_client_disconnect(target_user)
+                if not self.is_user_online(target_user):
+                    self.on_client_disconnect(target_user)
+                else:
+                    # Target remains connected: abort only this failing transfer session
+                    # (e.g., frame serialization error) without tearing down unrelated transfers.
+                    with self._lock:
+                        self._active_sessions.pop(session_id, None)
+                    fail_reason = f"Failed to relay {msg_type} frame to '{target_user}'."
+                    self._send_error(from_user, session_id, "ERR_INVALID_METADATA", fail_reason)
+                    if target_user != from_user:
+                        self._send_error(target_user, session_id, "ERR_INVALID_METADATA", fail_reason)
 
     def prune_stale_sessions(self, timeout_seconds: float = 60.0) -> list[str]:
         """Prune transfer sessions that have been inactive longer than timeout_seconds."""
@@ -392,7 +408,7 @@ def handle_file_transfer_message(context: Any, message: dict[str, Any]) -> None:
 
 
 def register_file_transfer_handlers(dispatcher: Any) -> None:
-    """Register all FILE_*"""
+    """Register all FILE_* message handlers with the server dispatcher."""
     for msg_type in (
         mt.FILE_INIT,
         mt.FILE_ACCEPT,

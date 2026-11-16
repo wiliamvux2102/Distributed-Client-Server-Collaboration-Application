@@ -130,7 +130,11 @@ def serve_discovery(stop_event: threading.Event) -> None:
                     continue
 
                 req_version = request.get("protocol_version")
-                if isinstance(req_version, bool) or req_version != PROTOCOL_VERSION:
+                if (
+                    isinstance(req_version, bool)
+                    or not isinstance(req_version, int)
+                    or req_version != PROTOCOL_VERSION
+                ):
                     continue
 
                 response = {

@@ -1,6 +1,5 @@
 """Command-line interface for the collaboration client."""
 
-import os
 from pathlib import Path
 import socket
 import ssl

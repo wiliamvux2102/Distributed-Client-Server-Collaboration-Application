@@ -102,12 +102,11 @@ class TestIntegrity(unittest.TestCase):
         self.assertEqual(sanitize_filename("."), "unnamed_file")
         self.assertEqual(sanitize_filename(None), "unnamed_file")
 
-    def test_parse_non_negative_int_rejects_bool_negative_and_invalid(self) -> None:
+    def test_parse_non_negative_int_rejects_bool_float_string_negative_and_invalid(self) -> None:
         self.assertEqual(parse_non_negative_int(0, "filesize"), 0)
         self.assertEqual(parse_non_negative_int(42, "filesize"), 42)
-        self.assertEqual(parse_non_negative_int("15", "filesize"), 15)
 
-        for bad_val in (True, False, -1, -100, "abc", None):
+        for bad_val in (True, False, -1, -100, 1.7, 1.0, "15", "abc", None):
             with self.assertRaises(ValueError):
                 parse_non_negative_int(bad_val, "filesize")
 

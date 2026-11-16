@@ -1,5 +1,5 @@
 """
-Quick local test suite for M3 File Transfer module.
+Quick local test suite for the File Transfer module.
 Tests: empty file, small file, binary file, offline user, and successful transfer flow.
 """
 from pathlib import Path
@@ -11,7 +11,7 @@ from transfer.server_handler import FileTransferServerHandler
 
 
 def run_tests() -> None:
-    print("=== Starting M3 File Transfer Local Tests ===")
+    print("=== Starting File Transfer Local Tests ===")
 
     test_dir = Path("test_sandbox")
     if test_dir.exists():

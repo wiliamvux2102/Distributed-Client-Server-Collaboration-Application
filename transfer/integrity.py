@@ -49,16 +49,12 @@ def sanitize_filename(filename: object, fallback: str = "unnamed_file") -> str:
 
 
 def parse_non_negative_int(value: object, field_name: str = "value") -> int:
-    """Parse a non-negative integer while rejecting booleans and non-numeric values."""
-    if isinstance(value, bool):
-        raise ValueError(f"{field_name} must be an integer, not bool.")
-    try:
-        parsed = int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError) as error:
-        raise ValueError(f"Invalid {field_name}: {value}") from error
-    if parsed < 0:
+    """Validate a non-negative integer while rejecting booleans, floats, strings, and negatives."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"Invalid {field_name}: {value!r} (expected integer)")
+    if value < 0:
         raise ValueError(f"{field_name} must be non-negative")
-    return parsed
+    return value
 
 
 class FileMetadata(TypedDict):

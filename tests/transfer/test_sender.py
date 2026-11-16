@@ -278,7 +278,7 @@ class TestSender(unittest.TestCase):
         self.assertIsNone(manager.get_active_status())
 
     def test_single_line_progress_bar_without_multiline_chat_spam(self) -> None:
-        """Verify Option A: multi-chunk transfer updates single-line status bar and prints only 1 final line."""
+        """Verify multi-chunk transfers update one status bar line and print one final summary."""
         large_file = self.test_dir / "report.pdf"
         large_file.write_bytes(b"X" * (256 * 1024))  # 256 KB = 4 chunks of 64 KB
 

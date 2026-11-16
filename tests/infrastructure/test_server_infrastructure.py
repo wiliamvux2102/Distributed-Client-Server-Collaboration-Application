@@ -19,9 +19,7 @@ if _ROOT not in sys.path:
 from common import message_types as mt
 from common.protocol import (
     HEADER_FORMAT,
-    HEADER_SIZE,
     MAX_PAYLOAD_SIZE,
-    recv_exact,
     recv_frame,
     recv_message,
     send_frame,
@@ -32,7 +30,7 @@ from infrastructure.message_dispatcher import (
     ClientContext,
     MessageDispatcher,
 )
-from infrastructure.user_registry import UserRegistry, UserSession
+from infrastructure.user_registry import UserRegistry
 
 
 class FakeSocket:
@@ -524,6 +522,84 @@ class InfrastructureRegressionTests(unittest.TestCase):
         ):
             with self.assertRaises(TimeoutError):
                 client_connection.discover_server()
+
+    def test_udp_discovery_rejects_float_protocol_version_on_server_and_client(self) -> None:
+        import socket
+        from unittest.mock import patch
+        from infrastructure import client_connection, udp_service
+
+        # Client must ignore float protocol_version == 1.0 even though 1.0 == 1 in Python
+        float_resp = json.dumps({
+            "type": mt.UDP_DISCOVERY_RESPONSE,
+            "protocol_version": 1.0,
+            "tcp_port": 5000,
+        }).encode("utf-8")
+
+        class DummyClientUdp:
+            def __init__(self) -> None:
+                self._responses = [(float_resp, ("127.0.0.1", 5001))]
+
+            def setsockopt(self, *args, **kwargs) -> None:
+                pass
+
+            def settimeout(self, timeout) -> None:
+                pass
+
+            def sendto(self, data, addr) -> None:
+                pass
+
+            def recvfrom(self, size):
+                if self._responses:
+                    return self._responses.pop(0)
+                raise socket.timeout("done")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        with (
+            patch("infrastructure.client_connection.socket.socket", return_value=DummyClientUdp()),
+            patch("infrastructure.client_connection._get_discovery_targets", return_value=["127.0.0.1"]),
+        ):
+            with self.assertRaises(TimeoutError):
+                client_connection.discover_server()
+
+        # Server must also ignore float protocol_version == 1.0 while accepting int 1
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            udp_port = probe.getsockname()[1]
+
+        stop_event = threading.Event()
+        with (
+            patch.object(udp_service, "UDP_BIND_HOST", "127.0.0.1"),
+            patch.object(udp_service, "UDP_DISCOVERY_PORT", udp_port),
+            patch.object(udp_service, "UDP_WAIT_INTERVAL", 0.05),
+        ):
+            worker = threading.Thread(target=udp_service.serve_discovery, args=(stop_event,), daemon=True)
+            worker.start()
+            try:
+                time.sleep(0.08)
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as cli:
+                    cli.settimeout(0.25)
+                    cli.sendto(
+                        json.dumps({"type": mt.UDP_DISCOVER, "protocol_version": 1.0}).encode("utf-8"),
+                        ("127.0.0.1", udp_port),
+                    )
+                    with self.assertRaises(socket.timeout):
+                        cli.recvfrom(2048)
+
+                    cli.settimeout(1.5)
+                    cli.sendto(
+                        json.dumps({"type": mt.UDP_DISCOVER, "protocol_version": udp_service.PROTOCOL_VERSION}).encode("utf-8"),
+                        ("127.0.0.1", udp_port),
+                    )
+                    resp_bytes, _ = cli.recvfrom(2048)
+                    self.assertEqual(json.loads(resp_bytes.decode("utf-8"))["type"], mt.UDP_DISCOVERY_RESPONSE)
+            finally:
+                stop_event.set()
+                worker.join(timeout=1.5)
 
     def test_stale_disconnect_does_not_evict_reconnected_user_transfers(self) -> None:
         from unittest.mock import patch

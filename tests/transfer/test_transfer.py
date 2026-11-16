@@ -21,7 +21,7 @@ from transfer.server_handler import FileTransferServerHandler
 
 
 class TestTransferEndToEnd(unittest.TestCase):
-    """End-to-end integration tests for Member 3 transfer scenarios."""
+    """End-to-end integration tests for file transfer scenarios."""
 
     def setUp(self) -> None:
         self.test_dir = Path(tempfile.mkdtemp())
