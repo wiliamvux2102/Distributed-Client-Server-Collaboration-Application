@@ -1,45 +1,51 @@
 #!/usr/bin/env python3
 """
 Packaging script for project submission.
-Creates a clean, submission-ready ZIP archive adhering strictly to security requirements:
+Creates a clean, submission-ready ZIP archive using an explicit allowlist of project files:
 - Excludes CA private key (certs/private/dev-ca-key.pem) per PKI security standards.
 - Retains server private key (certs/private/server-key.pem) so the server can run TLS immediately.
-- Excludes virtual environments (.venv), cache (__pycache__), git metadata (.git), large test PDFs, and temporary files (*.part, *.tmp).
+- Includes only required source, config template, certificate, test, and documentation paths so extra local folders never leak into the archive.
 """
 
 from __future__ import annotations
+
 import argparse
+import os
 from pathlib import Path
-import sys
 import zipfile
 
-# Root directory of the repository
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
-# Files and directories that MUST be excluded from the submission archive
-EXCLUDED_DIRS = {
-    ".git",
-    ".venv",
-    "venv",
-    "env",
-    "ENV",
+INCLUDED_ROOT_FILES = (
+    ".gitignore",
+    "README.md",
+    "config.example.json",
+    "requirements.txt",
+)
+
+INCLUDED_DIRS = (
+    "certs",
+    "chat",
+    "common",
+    "docs",
+    "infrastructure",
+    "scripts",
+    "tests",
+    "transfer",
+    "ui",
+)
+
+EXCLUDED_SUBDIRS = {
     "__pycache__",
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
-    ".vscode",
-    ".idea",
-    ".agents",
-    "dist",
-    "build",
 }
 
 EXCLUDED_FILES = {
-    # CRITICAL: CA private key must NEVER be distributed in submission archives
+    # CRITICAL: CA private key and CSR must never be distributed in submission archives.
     "certs/private/dev-ca-key.pem",
     "certs/private/server.csr",
-    "config.json",
-    "config.local.json",
 }
 
 EXCLUDED_EXTENSIONS = {
@@ -50,70 +56,34 @@ EXCLUDED_EXTENSIONS = {
     ".tmp",
     ".log",
     ".swp",
-    ".aux",
-    ".toc",
-    ".out",
-    ".fls",
-    ".fdb_latexmk",
-    ".bbl",
-    ".blg",
-    ".bcf",
-    ".run.xml",
-    ".nav",
-    ".snm",
-    ".vrb",
-    ".idx",
-    ".ind",
-    ".ilg",
-    ".lof",
-    ".lot",
-    ".xdv",
-}
-
-# Large temporary test assets that should not bloat the source code submission
-EXCLUDED_TEST_ASSETS = {
-    "Doraemon.pdf",
-    "blu-ray-booklet.pdf",
-    "2410966.pdf",
 }
 
 
 def should_include_file(file_path: Path) -> bool:
-    """Determine whether a file should be packaged into the submission ZIP."""
+    """Determine whether a file belongs in the submission ZIP archive."""
     rel_path = file_path.relative_to(ROOT_DIR)
     rel_str = str(rel_path).replace("\\", "/")
 
-    # Check directory exclusions
-    for part in rel_path.parts[:-1]:
-        if part in EXCLUDED_DIRS:
-            return False
+    if len(rel_path.parts) == 1:
+        return rel_str in INCLUDED_ROOT_FILES
 
-    # Check explicit file exclusions
+    if rel_path.parts[0] not in INCLUDED_DIRS:
+        return False
+
+    if any(part in EXCLUDED_SUBDIRS for part in rel_path.parts[1:-1]):
+        return False
+
     if rel_str in EXCLUDED_FILES:
         return False
 
-    # Check test assets in root
-    if rel_str in EXCLUDED_TEST_ASSETS:
-        return False
-
-    # Check extension exclusions
     if file_path.suffix.lower() in EXCLUDED_EXTENSIONS:
         return False
-    if file_path.name.lower().endswith(".synctex.gz"):
-        return False
-
-    # Exclude files inside downloads/ (only preserve the downloads folder itself)
-    if len(rel_path.parts) > 1 and rel_path.parts[0] == "downloads":
-        if file_path.name != ".gitkeep":
-            return False
 
     return True
 
 
 def package_project(output_zip: Path) -> None:
-    """Package repository files into the target ZIP file."""
-    import os
-
+    """Package allowlisted project files into the target ZIP file."""
     output_zip.parent.mkdir(parents=True, exist_ok=True)
 
     included_count = 0
@@ -125,44 +95,51 @@ def package_project(output_zip: Path) -> None:
     print("=" * 65)
 
     with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED) as zipf:
-        # Ensure downloads folder exists in the archive
+        # Ensure downloads directory exists cleanly in the extracted project.
         zipf.writestr("downloads/.gitkeep", "")
 
-        for root, dirs, files in os.walk(ROOT_DIR):
-            # Prune excluded directories in-place so os.walk does not traverse them
-            dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
-
-            for file in files:
-                file_path = Path(root) / file
-                if not should_include_file(file_path):
-                    continue
-
-                arcname = str(file_path.relative_to(ROOT_DIR)).replace("\\", "/")
-                zipf.write(file_path, arcname)
+        for filename in INCLUDED_ROOT_FILES:
+            file_path = ROOT_DIR / filename
+            if file_path.is_file() and should_include_file(file_path):
+                zipf.write(file_path, filename)
                 included_count += 1
                 total_uncompressed_bytes += file_path.stat().st_size
 
-    # Verification checks
-    print(f"\n[+] Đã đóng gói: {included_count} tệp tin")
+        for dir_name in INCLUDED_DIRS:
+            base_dir = ROOT_DIR / dir_name
+            if not base_dir.is_dir():
+                continue
+
+            for root, dirs, files in os.walk(base_dir):
+                dirs[:] = sorted(d for d in dirs if d not in EXCLUDED_SUBDIRS)
+
+                for file in sorted(files):
+                    file_path = Path(root) / file
+                    if not should_include_file(file_path):
+                        continue
+
+                    arcname = str(file_path.relative_to(ROOT_DIR)).replace("\\", "/")
+                    zipf.write(file_path, arcname)
+                    included_count += 1
+                    total_uncompressed_bytes += file_path.stat().st_size
+
+    print(f"\n[+] Đã đóng gói: {included_count} tệp tin (+ downloads/.gitkeep)")
     print(f"[+] Tổng dung lượng chưa nén: {total_uncompressed_bytes / (1024 * 1024):.2f} MB")
     print(f"[+] File ZIP đầu ra: {output_zip.resolve()} ({output_zip.stat().st_size / (1024 * 1024):.2f} MB)")
 
     with zipfile.ZipFile(output_zip, "r") as check_zip:
         names = set(check_zip.namelist())
 
-        # Security check 1: CA private key must NOT be inside
         assert "certs/private/dev-ca-key.pem" not in names, (
             "BẢO MẬT THẤT BẠI: Khóa riêng CA (dev-ca-key.pem) bị phát hiện trong ZIP!"
         )
         print("[✓] Bảo mật: Khóa riêng CA (certs/private/dev-ca-key.pem) đã được loại bỏ.")
 
-        # Security check 2: Server private key MUST be inside for server to run TLS
         assert "certs/private/server-key.pem" in names, (
             "THIẾU TỆP: Khóa riêng server (certs/private/server-key.pem) cần thiết cho TLS!"
         )
         print("[✓] Khóa riêng Server: certs/private/server-key.pem có sẵn cho TLS Server.")
 
-        # Hygiene check: No .venv or cache
         assert not any(n.startswith(".venv/") for n in names), ".venv bị đóng gói vào ZIP!"
         assert not any("__pycache__" in n for n in names), "__pycache__ bị đóng gói vào ZIP!"
         print("[✓] Vệ sinh mã nguồn: Toàn bộ .venv, __pycache__, và file rác đã được làm sạch.")
