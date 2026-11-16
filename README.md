@@ -29,7 +29,7 @@ pip install -r requirements.txt
 
 Nếu cần tùy chỉnh cổng hoặc đường dẫn chứng chỉ cục bộ, sao chép [config.example.json](config.example.json) thành `config.json` trước khi chạy (chi tiết xem [docs/configuration.md](docs/configuration.md)).
 
-> **Chứng chỉ TLS phát triển:** Gói nộp ZIP tạo từ `scripts/package_submission.py` giữ sẵn `certs/dev-ca.pem`, `certs/server-cert.pem` và `certs/private/server-key.pem` (chỉ loại `certs/private/dev-ca-key.pem`) để chạy thử nghiệm cục bộ. Nếu clone từ Git (thư mục `certs/private/` bị bỏ qua theo `.gitignore`), có thể tạo lại cặp CA và chứng chỉ server phát triển bằng OpenSSL:
+> **Chứng chỉ TLS phát triển:** Gói nộp ZIP tạo từ `scripts/package_submission.py` giữ sẵn `certs/dev-ca.pem`, `certs/server-cert.pem` và `certs/private/server-key.pem` (chỉ loại `certs/private/dev-ca-key.pem`) để chạy thử nghiệm cục bộ. Nếu clone từ Git (thư mục `certs/private/` bị bỏ qua theo `.gitignore`), có thể tạo lại cặp CA và chứng chỉ server phát triển bằng OpenSSL (chạy trên **Linux / macOS / Git Bash**):
 >
 > ```bash
 > mkdir -p certs/private
@@ -43,6 +43,8 @@ Nếu cần tùy chỉnh cổng hoặc đường dẫn chứng chỉ cục bộ,
 >   -CAkey certs/private/dev-ca-key.pem -CAcreateserial \
 >   -out certs/server-cert.pem -days 365 -sha256 -extfile certs/server.ext
 > ```
+>
+> Trên **Windows PowerShell**, tạo thư mục bằng `New-Item -ItemType Directory -Force -Path certs/private | Out-Null` và chạy các lệnh `openssl` trên một dòng (hoặc dùng dấu `` ` `` thay cho `\`).
 
 ## Hướng dẫn sử dụng
 
@@ -90,7 +92,7 @@ Các lệnh trong CLI (hoặc nhập văn bản trực tiếp để gửi chat c
 
 ## Kiểm thử tự động
 
-Chạy toàn bộ **129** unit test và integration test (bao gồm kiểm thử loopback trực tiếp qua UDP + TLS):
+Chạy toàn bộ **132** unit test và integration test (bao gồm kiểm thử loopback trực tiếp qua UDP + TLS):
 
 ```bash
 python -m unittest discover -s tests -t . -v

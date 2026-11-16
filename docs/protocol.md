@@ -68,9 +68,10 @@ Khi truyền trên kênh JSON chung, dữ liệu nhị phân của chunk đượ
 ### Máy trạng thái phiên tại Server & Kiểm tra an toàn
 
 - Vòng đời trạng thái hợp lệ trong `FileTransferServerHandler`:
-  `INIT` --(`FILE_ACCEPT` bởi receiver)--> `ACCEPTED` --(`FILE_CHUNK` bởi sender)--> `TRANSFERRING` --(`FILE_END` bởi sender)--> `WAITING_RESULT` --(`FILE_RESULT` bởi receiver)--> `COMPLETED`.
-- Các thông điệp kết thúc (`FILE_RESULT`, `FILE_ERROR`) giải phóng ngay `ServerTransferSession` dưới khóa đồng bộ trước khi đẩy qua mạng; phiên không hoạt động quá `60` giây bị hàm `prune_stale_sessions` thu hồi và báo `ERR_SESSION_TIMEOUT`.
-- Server xác thực nghiêm ngặt: `session_id` hợp lệ (không rỗng, không khoảng trắng, không chứa `/`, `\`, `..`, `:`), `filename` là basename đơn hợp lệ, các trường số nguyên (`filesize`, `chunk_size`, `total_chunks`, `chunk_index`) không âm và từ chối kiểu `bool`, trường tùy chọn `is_broadcast` phải có kiểu `bool` (trả `ERR_INVALID_METADATA` nếu sai kiểu), đồng thời ghi đè `header["sender"]` bằng danh tính kết nối TLS thực tế.
+  - Tập tin khác rỗng (`filesize > 0`): `INIT` --(`FILE_ACCEPT` bởi receiver)--> `ACCEPTED` --(`FILE_CHUNK` bởi sender)--> `TRANSFERRING` --(`FILE_END` bởi sender)--> `WAITING_RESULT` --(`FILE_RESULT` bởi receiver)--> `COMPLETED`. `FILE_RESULT` trước `FILE_END` bị từ chối bằng `ERR_INVALID_STATE`.
+  - Tập tin rỗng (`filesize == 0`): Cho phép `FILE_RESULT` trực tiếp từ trạng thái `INIT` (hoặc `WAITING_RESULT`) để chuyển sang `COMPLETED`.
+- Các thông điệp kết thúc (`FILE_RESULT`, `FILE_ERROR`) giải phóng ngay `ServerTransferSession` dưới khóa đồng bộ trước khi đẩy qua mạng; nếu chuyển tiếp một khung thất bại khi người nhận vẫn đang online, chỉ duy nhất phiên lỗi bị hủy mà không ngắt các phiên truyền file khác. Phiên không hoạt động quá `60` giây bị `prune_stale_sessions` thu hồi và báo `ERR_SESSION_TIMEOUT`.
+- Server xác thực nghiêm ngặt: `session_id` hợp lệ (không rỗng, không khoảng trắng, không chứa `/`, `\`, `..`, `:`), `filename` là basename đơn hợp lệ, các trường số nguyên (`filesize`, `chunk_size`, `total_chunks`, `chunk_index`) phải là số nguyên nguyên bản không âm (`int`, loại trừ `bool`, `float` và chuỗi), trường tùy chọn `is_broadcast` phải có kiểu `bool` (trả `ERR_INVALID_METADATA` nếu sai kiểu), đồng thời ghi đè `header["sender"]` bằng danh tính kết nối TLS thực tế.
 
 ![Sơ đồ máy trạng thái phiên kết nối và truyền tập tin](diagrams/state_diagrams.png)
 
@@ -106,7 +107,7 @@ Khi truyền trên kênh JSON chung, dữ liệu nhị phân của chunk đượ
     "tcp_port": 5000
   }
   ```
-- Client chỉ chấp nhận phản hồi có `protocol_version` khớp cấu hình (`int`, loại trừ `bool`) và `tcp_port` nằm trong `[1, 65535]`.
+- Cả server (khi nhận `UDP_DISCOVER`) và client (khi nhận `UDP_DISCOVERY_RESPONSE`) đều kiểm tra `protocol_version` là số nguyên khớp cấu hình (loại trừ `bool` và `float`); client đồng thời kiểm tra `tcp_port` là số nguyên trong `[1, 65535]`.
 
 ### Duy trì phiên sống (`UDP_HEARTBEAT`)
 - Mỗi client định kỳ gửi gói tin được ký bằng `heartbeat_token` (token bí mật do server cấp qua TLS khi `LOGIN_OK`):
