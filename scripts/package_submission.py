@@ -50,6 +50,24 @@ EXCLUDED_EXTENSIONS = {
     ".tmp",
     ".log",
     ".swp",
+    ".aux",
+    ".toc",
+    ".out",
+    ".fls",
+    ".fdb_latexmk",
+    ".bbl",
+    ".blg",
+    ".bcf",
+    ".run.xml",
+    ".nav",
+    ".snm",
+    ".vrb",
+    ".idx",
+    ".ind",
+    ".ilg",
+    ".lof",
+    ".lot",
+    ".xdv",
 }
 
 # Large temporary test assets that should not bloat the source code submission
@@ -80,6 +98,8 @@ def should_include_file(file_path: Path) -> bool:
 
     # Check extension exclusions
     if file_path.suffix.lower() in EXCLUDED_EXTENSIONS:
+        return False
+    if file_path.name.lower().endswith(".synctex.gz"):
         return False
 
     # Exclude files inside downloads/ (only preserve the downloads folder itself)
