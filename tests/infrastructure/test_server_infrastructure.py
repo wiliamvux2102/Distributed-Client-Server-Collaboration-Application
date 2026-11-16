@@ -336,5 +336,303 @@ class MessageDispatcherTests(unittest.TestCase):
             self.dispatcher.register("", lambda c, m: None)
 
 
+class InfrastructureRegressionTests(unittest.TestCase):
+    """Regression tests for heartbeat input validation, UDP parsing, client guards, and reconnect isolation."""
+
+    def test_refresh_heartbeat_signed_rejects_bool_timestamp_and_non_str(self) -> None:
+        import hmac
+        import hashlib
+
+        registry = UserRegistry()
+        sock = Mock()
+        token = "secret-token"
+        self.assertTrue(registry.register("alice", sock, ("127.0.0.1", 50001), threading.Lock(), token))
+
+        now_ms = int(time.time() * 1000)
+        valid_sig = hmac.new(
+            token.encode("utf-8"),
+            f"alice:{now_ms}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+        self.assertFalse(registry.refresh_heartbeat_signed("alice", True, valid_sig, "127.0.0.1"))  # type: ignore[arg-type]
+        self.assertFalse(registry.refresh_heartbeat_signed(123, now_ms, valid_sig, "127.0.0.1"))  # type: ignore[arg-type]
+        self.assertFalse(registry.refresh_heartbeat_signed("alice", now_ms, 999, "127.0.0.1"))  # type: ignore[arg-type]
+        self.assertTrue(registry.refresh_heartbeat_signed("alice", now_ms, valid_sig, "127.0.0.1"))
+
+    def test_client_session_connect_and_logout_guards(self) -> None:
+        from infrastructure.client_connection import ClientSession
+
+        with self.assertRaises(ValueError):
+            ClientSession.connect("alice", lambda s: None, lambda m: None, server_host="   ", server_port=5000)
+        with self.assertRaises(ValueError):
+            ClientSession.connect("alice", lambda s: None, lambda m: None, server_host="127.0.0.1", server_port=True)  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            ClientSession.connect("alice", lambda s: None, lambda m: None, server_host="127.0.0.1", server_port=70000)
+
+        sock = Mock()
+        sock.sendall.side_effect = OSError("broken pipe")
+        session = ClientSession(
+            sock,
+            "127.0.0.1",
+            "alice",
+            "tok",
+            on_error=lambda s: None,
+            on_unhandled=lambda m: None,
+        )
+        # Closing/half-closed socket during logout must not raise
+        session.logout(timeout=0.1)
+        session.close()
+
+    def test_udp_discovery_ignores_boolean_protocol_version_and_tcp_port(self) -> None:
+        import socket
+        from unittest.mock import patch
+        from infrastructure import client_connection
+
+        bad_payload = json.dumps({
+            "type": mt.UDP_DISCOVERY_RESPONSE,
+            "protocol_version": True,
+            "tcp_port": 5000,
+        }).encode("utf-8")
+        bad_port_payload = json.dumps({
+            "type": mt.UDP_DISCOVERY_RESPONSE,
+            "protocol_version": 1,
+            "tcp_port": True,
+        }).encode("utf-8")
+
+        class DummyUdpSock:
+            def __init__(self) -> None:
+                self._responses = [
+                    (bad_payload, ("127.0.0.1", 5001)),
+                    (bad_port_payload, ("127.0.0.1", 5001)),
+                ]
+
+            def setsockopt(self, *args, **kwargs) -> None:
+                pass
+
+            def settimeout(self, timeout) -> None:
+                pass
+
+            def sendto(self, data, addr) -> None:
+                pass
+
+            def recvfrom(self, size):
+                if self._responses:
+                    return self._responses.pop(0)
+                raise socket.timeout("done")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        with (
+            patch("infrastructure.client_connection.socket.socket", return_value=DummyUdpSock()),
+            patch("infrastructure.client_connection._get_discovery_targets", return_value=["127.0.0.1"]),
+        ):
+            with self.assertRaises(TimeoutError):
+                client_connection.discover_server()
+
+    def test_stale_disconnect_does_not_evict_reconnected_user_transfers(self) -> None:
+        from unittest.mock import patch
+        from transfer.server_handler import FileTransferServerHandler
+
+        registry = UserRegistry()
+        stale_sock = Mock()
+        new_sock = Mock()
+        registry.register("alice", new_sock, ("127.0.0.1", 50002), threading.Lock(), "tok2")
+
+        ft_handler = FileTransferServerHandler(
+            send_to_user_fn=lambda u, m: True,
+            is_user_online_fn=lambda u: registry.get_session(u) is not None,
+        )
+        # Only when remove_if_same returns True should disconnect fire on_client_disconnect
+        with patch.object(ft_handler, "on_client_disconnect") as disc_spy:
+            if registry.remove_if_same("alice", stale_sock):
+                ft_handler.on_client_disconnect("alice")
+            disc_spy.assert_not_called()
+            self.assertIsNotNone(registry.get_session("alice"))
+
+            if registry.remove_if_same("alice", new_sock):
+                ft_handler.on_client_disconnect("alice")
+            disc_spy.assert_called_once_with("alice")
+            self.assertIsNone(registry.get_session("alice"))
+
+    def test_live_tls_udp_loopback_end_to_end_session(self) -> None:
+        """Full live loopback over real UDP discovery/heartbeat and TLS TCP server/client."""
+        import shutil
+        import socket
+        import tempfile
+        from unittest.mock import patch
+        from chat.client_chat import ClientChat
+        from infrastructure import client_connection, server as infra_server, udp_service
+        from transfer.sender import ClientFileTransferManager
+
+        # Clear any lingering shared user_registry entries before loopback test
+        for user in infra_server.user_registry.list_online():
+            session_obj = infra_server.user_registry.get_session(user)
+            if session_obj is not None:
+                infra_server.user_registry.remove_if_same(user, session_obj.connection)
+
+        # Allocate free ephemeral UDP port cleanly
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe_udp:
+            probe_udp.bind(("127.0.0.1", 0))
+            udp_port = probe_udp.getsockname()[1]
+
+        tls_ctx = infra_server.create_server_context()
+        dispatcher = infra_server.create_message_dispatcher()
+
+        tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp_sock.bind(("127.0.0.1", 0))
+        tcp_sock.listen(8)
+        tcp_sock.settimeout(0.2)
+        tcp_port = tcp_sock.getsockname()[1]
+
+        stop_event = threading.Event()
+        client_threads: list[threading.Thread] = []
+
+        def accept_loop() -> None:
+            while not stop_event.is_set():
+                try:
+                    conn, addr = tcp_sock.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                t = threading.Thread(
+                    target=infra_server.handle_client,
+                    args=(conn, addr, tls_ctx, dispatcher),
+                    daemon=True,
+                )
+                t.start()
+                client_threads.append(t)
+
+        accept_thread = threading.Thread(target=accept_loop, daemon=True)
+        accept_thread.start()
+
+        tmp_dir = Path(tempfile.mkdtemp())
+
+        try:
+            with (
+                patch.object(udp_service, "UDP_BIND_HOST", "127.0.0.1"),
+                patch.object(udp_service, "UDP_DISCOVERY_PORT", udp_port),
+                patch.object(udp_service, "TCP_SERVER_PORT", tcp_port),
+                patch.object(client_connection, "DISCOVERY_PORT", udp_port),
+                patch.object(client_connection, "_get_discovery_targets", return_value=["127.0.0.1"]),
+            ):
+                udp_thread = threading.Thread(
+                    target=udp_service.serve_discovery,
+                    args=(stop_event,),
+                    daemon=True,
+                )
+                udp_thread.start()
+                time.sleep(0.08)
+
+                host, port = client_connection.discover_server()
+                self.assertEqual(port, tcp_port)
+
+                alice_msgs: list[tuple[str, str, bool]] = []
+                bob_msgs: list[tuple[str, str, bool]] = []
+                alice_events: list[dict] = []
+                bob_events: list[dict] = []
+                alice_ft_holder: list[ClientFileTransferManager] = []
+                bob_ft_holder: list[ClientFileTransferManager] = []
+
+                def make_unhandled(ft_ref):
+                    def on_unhandled(msg: dict) -> None:
+                        mtype = msg.get("type")
+                        if mtype in {mt.FILE_INIT, mt.FILE_ACCEPT, mt.FILE_CHUNK, mt.FILE_END, mt.FILE_RESULT, mt.FILE_ERROR} and ft_ref:
+                            ft_ref[0].handle_incoming(msg)
+                    return on_unhandled
+
+                alice = client_connection.ClientSession.connect(
+                    "alice",
+                    lambda err: None,
+                    make_unhandled(alice_ft_holder),
+                    server_host=host,
+                    server_port=port,
+                )
+                bob = client_connection.ClientSession.connect(
+                    "bob",
+                    lambda err: None,
+                    make_unhandled(bob_ft_holder),
+                    server_host=host,
+                    server_port=port,
+                )
+
+                alice_chat = ClientChat(alice.send, lambda s, t, b: alice_msgs.append((s, t, b)), lambda *a: None)
+                bob_chat = ClientChat(bob.send, lambda s, t, b: bob_msgs.append((s, t, b)), lambda *a: None)
+                alice_chat.register_handlers(alice.register_handler)
+                bob_chat.register_handlers(bob.register_handler)
+
+                alice_ft = ClientFileTransferManager("alice", alice.send, lambda s: None, on_event=alice_events.append)
+                bob_ft = ClientFileTransferManager("bob", bob.send, lambda s: None, on_event=bob_events.append)
+                bob_ft.receiver.download_dir = tmp_dir / "bob_dl"
+                bob_ft.receiver.download_dir.mkdir(parents=True, exist_ok=True)
+                alice_ft_holder.append(alice_ft)
+                bob_ft_holder.append(bob_ft)
+
+                alice.start()
+                bob.start()
+
+                try:
+                    time.sleep(0.15)
+                    self.assertIsNotNone(infra_server.user_registry.get_session("alice"))
+                    self.assertIsNotNone(infra_server.user_registry.get_session("bob"))
+
+                    # Test broadcast + direct message over live TLS
+                    alice_chat.send_broadcast("hello room")
+                    bob_chat.send_direct("alice", "hi alice")
+
+                    deadline = time.time() + 3.0
+                    while time.time() < deadline and not (bob_msgs and alice_msgs):
+                        time.sleep(0.02)
+                    self.assertIn(("alice", "hello room", True), bob_msgs)
+                    self.assertIn(("bob", "hi alice", False), alice_msgs)
+
+                    # Test live TLS file transfer with SHA-256 verification
+                    src_file = tmp_dir / "sample_e2e.bin"
+                    src_bytes = b"E2E-TLS-DATA-" * 6000  # ~78 KB -> multi-chunk over real TLS
+                    src_file.write_bytes(src_bytes)
+                    alice_ft.send_file("bob", src_file)
+
+                    deadline = time.time() + 5.0
+                    while time.time() < deadline:
+                        alice_done = any(e.get("event") == "completed" for e in alice_events)
+                        bob_done = any(e.get("event") == "completed" for e in bob_events)
+                        if alice_done and bob_done:
+                            break
+                        time.sleep(0.03)
+
+                    self.assertTrue(any(e.get("event") == "completed" for e in alice_events))
+                    self.assertTrue(any(e.get("event") == "completed" for e in bob_events))
+                    self.assertEqual((bob_ft.receiver.download_dir / "sample_e2e.bin").read_bytes(), src_bytes)
+                finally:
+                    try:
+                        alice_ft.cleanup("test done")
+                    except Exception:
+                        pass
+                    try:
+                        bob_ft.cleanup("test done")
+                    except Exception:
+                        pass
+                    alice.logout(timeout=1.0)
+                    bob.logout(timeout=1.0)
+                    alice.close()
+                    bob.close()
+        finally:
+            stop_event.set()
+            tcp_sock.close()
+            accept_thread.join(timeout=1.0)
+            for t in client_threads:
+                t.join(timeout=1.0)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            for user in infra_server.user_registry.list_online():
+                session_obj = infra_server.user_registry.get_session(user)
+                if session_obj is not None:
+                    infra_server.user_registry.remove_if_same(user, session_obj.connection)
+
+
 if __name__ == "__main__":
     unittest.main()

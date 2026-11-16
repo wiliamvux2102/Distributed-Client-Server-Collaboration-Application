@@ -1,8 +1,9 @@
 import logging
 import socket
-import threading
-import secrets
 import ssl
+import secrets
+import sys
+import threading
 
 from common.protocol import recv_message, send_message
 from common import message_types as mt
@@ -247,7 +248,7 @@ def handle_client(
 
             if removed:
                 print(f"[SERVER] {username} đã offline.")
-            file_transfer_server_handler.on_client_disconnect(username)
+                file_transfer_server_handler.on_client_disconnect(username)
 
 
         try:
@@ -284,10 +285,8 @@ def send_to_user(username: str, message: dict) -> bool:
             pass
 
         # Chỉ dọn nếu registry vẫn chứa đúng phiên này.
-        user_registry.remove_if_same(
-            username,
-            session.connection,
-        )
+        if user_registry.remove_if_same(username, session.connection):
+            file_transfer_server_handler.on_client_disconnect(username)
 
         return False
 
@@ -313,6 +312,8 @@ def main() -> None:
 
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+            if sys.platform != "win32":
+                server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             server_socket.bind((host, PORT))
             server_socket.listen()
             server_socket.settimeout(ACCEPT_TIMEOUT)

@@ -77,7 +77,7 @@ def _get_discovery_targets() -> list[str]:
             _, _, ips = socket.gethostbyname_ex(socket.gethostname())
             for ip in ips:
                 parts = ip.split(".")
-                if len(parts) == 4 and not parts[0].startswith("127"):
+                if len(parts) == 4 and parts[0] != "127":
                     directed = f"{parts[0]}.{parts[1]}.{parts[2]}.255"
                     if directed not in targets:
                         targets.append(directed)
@@ -140,12 +140,17 @@ def discover_server() -> tuple[str, int]:
                 if response.get("type") != mt.UDP_DISCOVERY_RESPONSE:
                     continue
 
-                if response.get("protocol_version") != PROTOCOL_VERSION:
+                resp_version = response.get("protocol_version")
+                if isinstance(resp_version, bool) or resp_version != PROTOCOL_VERSION:
                     continue
 
                 tcp_port = response.get("tcp_port")
 
-                if not isinstance(tcp_port, int) or not 1 <= tcp_port <= 65535:
+                if (
+                    isinstance(tcp_port, bool)
+                    or not isinstance(tcp_port, int)
+                    or not 1 <= tcp_port <= 65535
+                ):
                     continue
 
                 # IP server là IP nguồn của datagram phản hồi.
@@ -246,12 +251,23 @@ class ClientSession:
         if not isinstance(username, str) or not username.strip():
             raise ValueError("Username không được để trống.")
 
+        if server_port is not None and (
+            isinstance(server_port, bool)
+            or not isinstance(server_port, int)
+            or not 1 <= server_port <= 65535
+        ):
+            raise ValueError("Port không hợp lệ.")
+
         if server_host is None:
             server_host, discovered_port = discover_server()
             if server_port is None:
                 server_port = discovered_port
-        elif server_port is None:
-            server_port = SERVER_CONFIG["tcp_port"]
+        else:
+            server_host = server_host.strip()
+            if not server_host:
+                raise ValueError("Địa chỉ server không được để trống.")
+            if server_port is None:
+                server_port = SERVER_CONFIG["tcp_port"]
 
         connection = connect_tls(server_host, server_port)
 
@@ -352,7 +368,11 @@ class ClientSession:
         if self.is_closed:
             return True
 
-        self.send({"type": mt.QUIT})
+        try:
+            self.send({"type": mt.QUIT})
+        except (OSError, RuntimeError):
+            return self.is_closed
+
         if self._bye_event.wait(timeout):
             return True
 

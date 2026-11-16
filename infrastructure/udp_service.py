@@ -124,7 +124,8 @@ def serve_discovery(stop_event: threading.Event) -> None:
             if request_type != mt.UDP_DISCOVER:
                 continue
 
-            if request.get("protocol_version") != PROTOCOL_VERSION:
+            req_version = request.get("protocol_version")
+            if isinstance(req_version, bool) or req_version != PROTOCOL_VERSION:
                 continue
 
             response = {

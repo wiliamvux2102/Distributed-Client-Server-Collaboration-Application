@@ -51,6 +51,13 @@ class UserRegistry:
         max_skew_seconds: float = 30.0,
     ) -> bool:
         """Verify HMAC-SHA256 signed UDP heartbeat with timestamp window and anti-replay guard."""
+        if (
+            not isinstance(username, str)
+            or isinstance(timestamp_ms, bool)
+            or not isinstance(timestamp_ms, int)
+            or not isinstance(signature, str)
+        ):
+            return False
         now_ms = int(time.time() * 1000)
         if abs(now_ms - timestamp_ms) > int(max_skew_seconds * 1000):
             return False
