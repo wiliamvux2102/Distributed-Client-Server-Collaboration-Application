@@ -1,94 +1,123 @@
-# Đặc tả giao thức ứng dụng
+# Đặc tả Giao thức Truyền thông
 
-## Quy ước chung
+Hệ thống sử dụng hai kênh truyền tải phối hợp: **TCP bọc TLS (`>= TLSv1.2`)** cho mọi nghiệp vụ điều khiển, chat, truyền file và **UDP** cho khám phá máy chủ LAN cùng giám sát trạng thái kết nối sống.
 
-TCP dùng frame độ dài cố định ở phần header, theo định dạng:
+## 1. Đóng khung thông điệp TCP (TCP Framing)
+
+Mỗi thông điệp trên kênh TCP/TLS có cấu trúc:
 
 ```text
-+----------------------+------------------------------+
-| Length: 4 bytes      | Payload: Length bytes        |
-| unsigned big-endian  | UTF-8 JSON object            |
-+----------------------+------------------------------+
++-------------------------------+----------------------------------------+
+|  Length (4 bytes, big-endian) |   UTF-8 JSON Payload (Length bytes)    |
++-------------------------------+----------------------------------------+
 ```
 
-- Header được đóng/mở bằng `struct` format `!I`: số nguyên không dấu 4 byte theo network byte order (big-endian).
-- Payload phải có độ dài từ 1 byte tới `1,048,576` byte (1 MiB).
-- Payload là JSON UTF-8 object và phải có trường `type` là chuỗi không rỗng.
-- TCP là stream; bên nhận phải đọc đủ header và đủ payload theo độ dài header. Một lần `recv()` không đồng nghĩa với một message.
-- TLS handshake diễn ra trước message ứng dụng đầu tiên. Sau TLS handshake, `SERVER_READY` và các frame TCP đều được truyền trong TLS.
-- UDP discovery và heartbeat là JSON datagram riêng, không dùng framing TCP.
+- Độ dài `Length` là số nguyên không dấu chuẩn mạng (`!I`), giá trị tối đa `MAX_PAYLOAD_SIZE = 1048576` byte (`1 MB`).
+- Payload JSON luôn là object có trường bắt buộc `"type"` dạng chuỗi không rỗng.
 
-*Lưu ý riêng cho truyền file (File Transfer):* Các bản tin điều khiển (`FILE_INIT`, `FILE_ACCEPT`, `FILE_END`, `FILE_RESULT`, `FILE_ERROR`) và dữ liệu (`FILE_CHUNK`) đều đi qua cơ chế Length-Prefixed JSON Framing `[4 bytes Length][UTF-8 JSON]` dùng chung của `common/protocol.py` (kèm `send_lock` để tránh xen byte với tin nhắn chat). Với `FILE_CHUNK`, mảnh dữ liệu nhị phân (`64 KB`/chunk) được đóng gói an toàn trong trường `"binary_payload_base64"` và giải mã về raw `bytes` ngay tại tầng adapter của `transfer/`.
+---
 
-## Các message TCP hiện có
+## 2. Giao thức kết nối, đăng nhập & tra cứu
 
-| Type | Hướng | Các trường chính | Ý nghĩa |
-|---|---|---|---|
-| `SERVER_READY` | Server → client | `message` | Server đã hoàn tất TLS handshake và sẵn sàng nhận LOGIN. |
-| `LOGIN` | Client → server | `username` | Yêu cầu đăng nhập. Username dài 3–20 ký tự ASCII, gồm chữ, số và `_`. |
-| `LOGIN_OK` | Server → client | `username`, `heartbeat_token` | Đăng nhập thành công; token gắn với session. |
-| `LOGIN_ERROR` | Server → client | `code`, `message` | LOGIN không hợp lệ hoặc username đang được dùng. |
-| `ECHO` | Client → server | `text` | Yêu cầu server phản hồi lại nội dung. |
-| `ECHO_RESULT` | Server → client | `text` | Nội dung echo. |
-| `LIST_ONLINE` | Client → server | — | Yêu cầu danh sách username online. |
-| `ONLINE_LIST` | Server → client | `users` | Danh sách username online. |
-| `DIRECT_MESSAGE` | Client → server | `recipient`, `text` | Gửi tin riêng tới username khác. `text` tối đa 64 KiB theo số byte UTF-8. |
-| `DIRECT_DELIVERY` | Server → người nhận | `sender`, `text` | Tin riêng được chuyển tới người nhận. |
-| `BROADCAST_MESSAGE` | Client → server | `text` | Gửi tin chung. Server lấy username người gửi từ session đã đăng nhập. `text` tối đa 64 KiB theo số byte UTF-8. |
-| `BROADCAST_DELIVERY` | Server → các client khác đang online | `sender`, `text` | Tin chat chung được chuyển tới người nhận; server không gửi lại cho người gửi. |
-| `DELIVERY_STATUS` | Server → người gửi | `ok`, `message`; có thể có `code`, `delivered_count` | Kết quả chuyển tin riêng hoặc chat chung. `ok` cho biết thao tác gửi được server xử lý; chat chung có thể thành công với `delivered_count: 0`. |
-| `FILE_INIT` | Sender → Server → Receiver | `session_id`, `sender`, `receiver`, `filename`, `filesize`, `sha256`, `chunk_size`, `total_chunks` | Khởi tạo phiên truyền file, chứa metadata. |
-| `FILE_ACCEPT` | Receiver → Server → Sender | `session_id` | Đầu nhận xác nhận sẵn sàng nhận file (đã tạo xong file tạm `.part`). |
-| `FILE_CHUNK` | Sender → Server → Receiver | `session_id`, `chunk_index` (kèm binary payload) | Chứa mảnh dữ liệu nhị phân của file. |
-| `FILE_END` | Sender → Server → Receiver | `session_id` | Báo hiệu đã gửi xong toàn bộ các chunk của phiên. |
-| `FILE_RESULT` | Receiver → Server → Sender | `session_id`, `status`, `reason` | Đầu nhận báo kết quả kiểm tra kích thước + SHA-256 (`OK` hoặc `FAILED`). |
-| `FILE_ERROR` | Hai chiều / Server → Client | `session_id`, `code`, `reason` | Báo lỗi hoặc hủy phiên truyền giữa chừng. |
-| `QUIT` | Client → server | — | Yêu cầu kết thúc session. |
-| `BYE` | Server → client | `message` | Xác nhận kết thúc session. |
-| `ERROR` | Server → client | `code`, `message` | Lỗi request hoặc loại message không hỗ trợ. |
+| Hướng | Loại thông điệp (`type`) | Các trường chính | Mô tả |
+| :--- | :--- | :--- | :--- |
+| Server -> Client | `SERVER_READY` | `message` | Thông báo server sẵn sàng nhận `LOGIN` ngay sau TLS handshake |
+| Client -> Server | `LOGIN` | `username` | Đăng nhập với tên 3–20 ký tự ASCII (`[A-Za-z0-9_]`) |
+| Server -> Client | `LOGIN_OK` | `username`, `heartbeat_token` | Xác nhận đăng nhập thành công và cấp token bí mật cho UDP heartbeat |
+| Server -> Client | `LOGIN_ERROR` | `code`, `message` | Từ chối đăng nhập (tên không hợp lệ hoặc bị trùng) |
+| Client -> Server | `LIST_ONLINE` | — | Yêu cầu danh sách người dùng đang trực tuyến |
+| Server -> Client | `ONLINE_LIST` | `users` | Danh sách username đang online (đã sắp xếp) |
+| Client -> Server | `ECHO` | `text` | Gửi kiểm tra vòng lặp echo |
+| Server -> Client | `ECHO_RESULT` | `text` | Phản hồi nội dung echo (hoặc `ERROR` với mã `INVALID_TEXT`) |
+| `BYE` | S -> C | `message` | Xác nhận đóng phiên sạch theo yêu cầu `QUIT` |
 
-### Mã lỗi đang được dùng
+---
 
-- Đăng nhập: `LOGIN_REQUIRED`, `INVALID_USERNAME`, `USERNAME_TAKEN`.
-- Chat riêng: `INVALID_RECIPIENT`, `RECIPIENT_SELF`, `INVALID_TEXT`, `MESSAGE_TOO_LARGE`, `RECIPIENT_OFFLINE`.
-- Chat chung: `INVALID_TEXT`, `MESSAGE_TOO_LARGE`.
-- Truyền file (File Transfer): `ERR_USER_OFFLINE`, `ERR_SESSION_NOT_FOUND`, `ERR_HASH_MISMATCH`, `ERR_SIZE_MISMATCH`, `ERR_DISK_IO`, `ERR_PEER_DISCONNECTED`, `ERR_INVALID_METADATA`, `ERR_DUPLICATE_SESSION`, `ERR_UNAUTHORIZED_ROLE`, `ERR_INVALID_STATE`, `ERR_SESSION_TIMEOUT`, `ERR_CORRUPT_PAYLOAD`.
-- Request chung: `UNKNOWN_TYPE`; handler echo có thể trả `INVALID_TEXT`.
+## 3. Giao thức Chat (Nhắn chung & Nhắn riêng)
 
-## UDP discovery
+- **Tin nhắn gửi lên Server:**
+  - Chat chung: `{"type": "BROADCAST_MESSAGE", "text": "<nội dung>"}`
+  - Chat riêng: `{"type": "DIRECT_MESSAGE", "recipient": "<username>", "text": "<nội dung>"}`
+  - Ràng buộc nội dung: chuỗi UTF-8 hợp lệ, không rỗng và kích thước mã hóa `<= 65536` byte (`max_direct_message_bytes`).
+- **Tin nhắn Server phân phối tới người nhận:**
+  - `{"type": "BROADCAST_DELIVERY", "sender": "<username>", "text": "<nội dung>"}` (gửi tới mọi user online khác trừ người gửi).
+  - `{"type": "DIRECT_DELIVERY", "sender": "<username>", "text": "<nội dung>"}` (gửi riêng cho `recipient`).
+- **Phản hồi trạng thái tới người gửi (`DELIVERY_STATUS`):**
+  - Chứa `ok` (`bool`), `message` (`str`), cùng `delivered_count` (khi broadcast thành công) hoặc `code` (khi thất bại).
+  - Các mã lỗi `DELIVERY_STATUS`: `INVALID_RECIPIENT`, `RECIPIENT_SELF`, `INVALID_TEXT`, `MESSAGE_TOO_LARGE`, `RECIPIENT_OFFLINE`.
 
-Client gửi datagram JSON tới server UDP cổng 5001:
+---
 
-```json
-{"type":"UDP_DISCOVER","protocol_version":1}
-```
+## 4. Giao thức Truyền tập tin (`FILE_*`)
 
-Server trả:
+Khi truyền trên kênh JSON chung, dữ liệu nhị phân của chunk được đóng gói qua trường `"binary_payload_base64"` (mã hóa Base64 chuẩn kiểm tra nghiêm ngặt khi giải mã).
 
-```json
-{
-  "type": "UDP_DISCOVERY_RESPONSE",
-  "protocol_version": 1,
-  "tcp_port": 5000
-}
-```
+### Danh sách thông điệp
 
-Client lấy địa chỉ IP server từ IP nguồn của datagram phản hồi; IP không nằm trong JSON response. Client gửi tối đa ba lần, mỗi lần chờ một giây.
+| `type` | Hướng hợp lệ | Trường dữ liệu chính |
+| :--- | :--- | :--- |
+| `FILE_INIT` | Sender -> Server -> Receiver | `session_id`, `sender`, `receiver` (hoặc `recipient`), `filename`, `filesize`, `sha256`, `chunk_size`, `total_chunks` |
+| `FILE_ACCEPT` | Receiver -> Server -> Sender | `session_id` |
+| `FILE_CHUNK` | Sender -> Server -> Receiver | `session_id`, `chunk_index`, `binary_payload_base64` |
+| `FILE_END` | Sender -> Server -> Receiver | `session_id` |
+| `FILE_RESULT` | Receiver -> Server -> Sender | `session_id`, `status` (`"OK"` / `"FAILED"`), `reason` |
+| `FILE_ERROR` | Hai chiều / Server | `session_id`, `code` (khi server phát), `reason` |
 
-## UDP heartbeat
+### Máy trạng thái phiên tại Server & Kiểm tra an toàn
 
-Sau LOGIN_OK, client gửi định kỳ:
+- Vòng đời trạng thái hợp lệ trong `FileTransferServerHandler`:
+  `INIT` --(`FILE_ACCEPT` bởi receiver)--> `ACCEPTED` --(`FILE_CHUNK` bởi sender)--> `TRANSFERRING` --(`FILE_END` bởi sender)--> `WAITING_RESULT` --(`FILE_RESULT` bởi receiver)--> `COMPLETED`.
+- Các thông điệp kết thúc (`FILE_RESULT`, `FILE_ERROR`) giải phóng ngay `ServerTransferSession` dưới khóa đồng bộ trước khi đẩy qua mạng; phiên không hoạt động quá `60` giây bị hàm `prune_stale_sessions` thu hồi và báo `ERR_SESSION_TIMEOUT`.
+- Server xác thực nghiêm ngặt: `session_id` hợp lệ (không rỗng, không khoảng trắng, không chứa `/`, `\`, `..`, `:`), `filename` là basename đơn hợp lệ, các trường số nguyên (`filesize`, `chunk_size`, `total_chunks`, `chunk_index`) không âm và từ chối kiểu `bool`, đồng thời ghi đè `header["sender"]` bằng danh tính kết nối TLS thực tế.
 
-```json
-{"type":"UDP_HEARTBEAT","token":"<session token>"}
-```
+### Bảng mã lỗi truyền file (`FILE_ERROR`)
 
-- Chu kỳ gửi hiện tại: 10 giây.
-- Server xem session stale sau 35 giây không nhận heartbeat.
-- Server xác minh token và so khớp IP nguồn với IP của TCP session.
-- Heartbeat là một chiều, không có ACK.
-- UDP không được TLS bảo vệ; token và datagram hiện truyền plaintext.
+| Nhóm | Mã lỗi | Nguyên nhân |
+| :--- | :--- | :--- |
+| Phiên & Định tuyến | `ERR_INVALID_METADATA` | Metadata thiếu hoặc không hợp lệ (`session_id`, `receiver`, `filename`, `filesize`, `chunk_size`, `total_chunks`) |
+| Phiên & Định tuyến | `ERR_RECIPIENT_SELF` | Người gửi đặt `receiver` trùng chính mình |
+| Phiên & Định tuyến | `ERR_USER_OFFLINE` | Người nhận không trực tuyến hoặc gửi tới socket người nhận thất bại |
+| Phiên & Định tuyến | `ERR_DUPLICATE_SESSION` | Trùng `session_id` đang hoạt động trên server |
+| Phiên & Định tuyến | `ERR_SESSION_NOT_FOUND` | Phiên không tồn tại hoặc đã hết hạn |
+| Phiên & Định tuyến | `ERR_UNAUTHORIZED_ROLE` | Sai vai trò gửi frame (ví dụ `FILE_ACCEPT` không do receiver gửi) |
+| Phiên & Định tuyến | `ERR_INVALID_STATE` | Gửi thông điệp sai thứ tự máy trạng thái |
+| Phiên & Định tuyến | `ERR_SESSION_TIMEOUT` | Phiên truyền quá thời gian chờ không hoạt động |
+| Phiên & Định tuyến | `ERR_PEER_DISCONNECTED` | Đối tác mất kết nối TCP/heartbeat giữa phiên truyền |
+| Toàn vẹn & I/O | `ERR_CORRUPT_PAYLOAD` | Chuỗi Base64 payload hỏng không giải mã được |
+| Toàn vẹn & I/O | `ERR_OUT_OF_ORDER_CHUNK` | `chunk_index` không khớp tuần tự mong đợi hoặc sai kiểu |
+| Toàn vẹn & I/O | `ERR_SIZE_MISMATCH` | Tổng dung lượng thực nhận khác `filesize` |
+| Toàn vẹn & I/O | `ERR_HASH_MISMATCH` | Mã SHA-256 tệp nhận được không khớp `sha256` |
+| Toàn vẹn & I/O | `ERR_DISK_IO` | Lỗi đọc hoặc ghi tệp cục bộ |
 
-## Trạng thái triển khai
+---
 
-`ECHO`, `LIST_ONLINE` và `DIRECT_MESSAGE` được đăng ký trong `MessageDispatcher` và dùng chung interface handler `(ClientContext, message)`. Module truyền file (`transfer/`) đã hoàn thiện gồm `integrity.py`, `sender.py`, `receiver.py`, `server_handler.py` cùng bộ unit test đầy đủ (`tests/transfer/`), hỗ trợ truyền file qua Streaming Relay và kiểm tra toàn vẹn SHA-256. `QUIT` vẫn được xử lý trực tiếp trong connection handler để kết thúc vòng đời phiên.
+## 5. Giao thức UDP Discovery & Signed Heartbeat
+
+### Khám phá máy chủ (`UDP_DISCOVER` / `UDP_DISCOVERY_RESPONSE`)
+- Client gửi broadcast/unicast: `{"type": "UDP_DISCOVER", "protocol_version": 1}` tới cổng UDP cấu hình (`5001`).
+- Server phản hồi:
+  ```json
+  {
+    "type": "UDP_DISCOVERY_RESPONSE",
+    "protocol_version": 1,
+    "tcp_port": 5000
+  }
+  ```
+- Client chỉ chấp nhận phản hồi có `protocol_version` khớp cấu hình (`int`, loại trừ `bool`) và `tcp_port` nằm trong `[1, 65535]`.
+
+### Duy trì phiên sống (`UDP_HEARTBEAT`)
+- Mỗi client định kỳ gửi gói tin được ký bằng `heartbeat_token` (token bí mật do server cấp qua TLS khi `LOGIN_OK`):
+  ```json
+  {
+    "type": "UDP_HEARTBEAT",
+    "username": "<username>",
+    "ts": 1794769200000,
+    "sig": "<hmac_sha256_hex>"
+  }
+  ```
+- Trong đó `ts` là timestamp hiện tại tính bằng mili-giây và chữ ký được tính bởi `HMAC-SHA256(heartbeat_token, "<username>:<ts>")`.
+- Server chỉ làm mới phiên khi thỏa đồng thời:
+  1. Sai lệch thời gian `|now_ms - ts| <= 30000` ms (`±30` giây).
+  2. IP nguồn datagram trùng với IP kết nối TCP đã đăng nhập của `username`.
+  3. `ts` tăng nghiêm ngặt so với heartbeat hợp lệ gần nhất (`ts > last_heartbeat_ts`) để chống replay attack.
+  4. Chữ ký khớp theo so sánh thời gian hằng (`secrets.compare_digest`).

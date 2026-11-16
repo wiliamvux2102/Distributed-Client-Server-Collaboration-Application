@@ -1,23 +1,54 @@
-# Cấu hình ứng dụng
+# Tài liệu Cấu hình Hệ thống
 
-Ứng dụng đọc cấu hình tại `config.json` ở thư mục gốc dự án. Nếu file này
-chưa tồn tại, ứng dụng dùng `config.example.json`. File `config.json` đã được
-thêm vào `.gitignore`, nên mỗi thành viên có thể điều chỉnh môi trường riêng.
+Hệ thống nạp cấu hình tập trung tại [common/app_config.py](../common/app_config.py). Khi khởi động, chương trình đọc [config.example.json](../config.example.json) làm cấu hình nền chuẩn, sau đó ghi đè đệ quy từng khóa có mặt trong `config.json` (nếu tệp `config.json` tồn tại ở thư mục gốc dự án).
 
-Để tạo cấu hình cục bộ, sao chép `config.example.json` thành `config.json`,
-sau đó chỉnh các giá trị phù hợp. Đây là JSON thuần, không hỗ trợ chú thích
-`//` hoặc dấu phẩy thừa ở cuối object.
+## Các nhóm tham số cấu hình
 
-Các nhóm thiết lập:
+### 1. `server` — Máy chủ TCP/TLS
 
-- `server`: địa chỉ bind TCP, port, timeout chờ kết nối và thời gian chờ đăng nhập.
-- `udp`: địa chỉ bind và đích discovery, port, số lần thử, timeout, chu kỳ kiểm
-  tra và phiên bản giao thức discovery.
-- `heartbeat`: chu kỳ gửi heartbeat phía client và thời gian server chờ heartbeat.
-- `tls`: phiên bản TLS tối thiểu, tên máy chủ dùng xác minh chứng chỉ và các
-  đường dẫn chứng chỉ. Đường dẫn tương đối được tính từ thư mục gốc dự án.
-- `protocol`: kích thước frame TCP tối đa và kích thước tin nhắn riêng tối đa.
+| Khóa | Mặc định | Ý nghĩa |
+| :--- | :--- | :--- |
+| `tcp_bind_host` | `"0.0.0.0"` | Địa chỉ bind của socket TCP Server (`0.0.0.0` lắng nghe mọi card mạng) |
+| `tcp_port` | `5000` | Cổng TCP phục vụ kết nối client bọc TLS |
+| `tcp_connect_timeout_seconds` | `5` | Timeout phía client khi thiết lập kết nối TCP/TLS và đăng nhập |
+| `accept_timeout_seconds` | `0.5` | Chu kỳ chờ vòng lặp `accept()` của server để kiểm tra tín hiệu dừng |
+| `pre_login_timeout_seconds` | `60` | Thời gian tối đa chờ client hoàn tất TLS handshake và bản tin `LOGIN` |
 
-Server bind vào `0.0.0.0` để nhận kết nối trên các giao diện mạng. Client tìm
-server bằng UDP discovery; địa chỉ `127.0.0.1` không được cấu hình làm địa chỉ
-server cố định ở client.
+### 2. `udp` — Khám phá mạng LAN & Heartbeat
+
+| Khóa | Mặc định | Ý nghĩa |
+| :--- | :--- | :--- |
+| `bind_host` | `"0.0.0.0"` | Địa chỉ bind của UDP Discovery/Heartbeat Service |
+| `port` | `5001` | Cổng UDP lắng nghe `UDP_DISCOVER` và `UDP_HEARTBEAT` |
+| `discovery_target` | `"255.255.255.255"` | Địa chỉ broadcast mặc định khi client dò tìm server |
+| `discovery_attempts` | `3` | Số lần client phát lại gói tin `UDP_DISCOVER` khi chưa nhận phản hồi |
+| `discovery_timeout_seconds` | `1` | Thời gian chờ mỗi lần thử `UDP_DISCOVER` |
+| `wait_interval_seconds` | `0.5` | Chu kỳ thức dậy trong vòng lặp UDP service để kiểm tra dừng/hết hạn phiên |
+| `protocol_version` | `1` | Phiên bản giao thức UDP hợp lệ mà server và client đối chiếu |
+
+### 3. `heartbeat` — Giám sát kết nối sống
+
+| Khóa | Mặc định | Ý nghĩa |
+| :--- | :--- | :--- |
+| `interval_seconds` | `10` | Chu kỳ client gửi gói `UDP_HEARTBEAT` tới server |
+| `timeout_seconds` | `35` | Ngưỡng không nhận được heartbeat hợp lệ trước khi server thu hồi phiên |
+
+### 4. `tls` — Bảo mật kênh truyền
+
+| Khóa | Mặc định | Ý nghĩa |
+| :--- | :--- | :--- |
+| `minimum_version` | `"TLSv1.2"` | Phiên bản TLS tối thiểu cho phép (`"TLSv1.2"` hoặc `"TLSv1.3"`) |
+| `server_name` | `"collab-server.local"` | Tên máy chủ (SNI/SAN) dùng để kiểm chứng chứng chỉ server |
+| `ca_certificate` | `"certs/dev-ca.pem"` | Đường dẫn chứng chỉ CA tin cậy phía client |
+| `server_certificate` | `"certs/server-cert.pem"` | Đường dẫn chứng chỉ công khai của server |
+| `server_private_key` | `"certs/private/server-key.pem"` | Đường dẫn khóa bí mật của server |
+
+### 5. `protocol` — Giới hạn bản tin
+
+| Khóa | Mặc định | Ý nghĩa |
+| :--- | :--- | :--- |
+| `max_payload_bytes` | `1048576` | Kích thước tối đa một khung TCP JSON (1 MB) |
+| `max_direct_message_bytes` | `65536` | Giới hạn byte UTF-8 tối đa của một tin nhắn chat (64 KB) |
+
+> [!NOTE]
+> Khóa riêng phát triển của CA (`certs/private/dev-ca-key.pem`) không thuộc tập tin phân phối hay cấu hình chạy runtime; cần giữ bí mật khóa này khi phát hành chứng chỉ mới cho server.

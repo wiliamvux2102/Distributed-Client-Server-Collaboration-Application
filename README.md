@@ -1,144 +1,128 @@
-# Distributed Client Server Collaboration Application
+# Ứng dụng Cộng tác Client–Server Phân tán
 
-Ứng dụng Python cho phép các client trong cùng mạng đăng nhập qua server, xem người dùng online, gửi tin riêng, chat chung và truyền file tin cậy. Server định tuyến tin nhắn và luồng chunk file qua TCP/TLS; UDP được dùng để tìm server và duy trì heartbeat.
+Hệ thống chat và truyền tập tin theo mô hình Client–Server hỗ trợ phát hiện máy chủ tự động qua UDP broadcast, bảo mật kênh điều khiển bằng TLS và kiểm tra toàn vẹn dữ liệu qua SHA-256.
 
 ## Tính năng chính
 
-- **Khám phá & duy trì phiên qua UDP:** Tự động tìm server qua UDP broadcast (`5001`), có nhập IPv4 thủ công dự phòng; duy trì session bằng UDP heartbeat ký HMAC-SHA256 kèm timestamp chống replay.
-- **Bảo mật & đóng gói bản tin:** Toàn bộ luồng TCP (`5000`) chạy trên TLS 1.2+ với xác minh CA/hostname, dùng framing JSON độ dài 4 byte.
-- **Chat thời gian thực:** Đăng nhập username duy nhất, xem danh sách online (tự làm mới trên GUI), chat chung (`#all` / `/all`) và nhắn riêng (`/msg` / DM).
-- **Truyền file tin cậy (`transfer/`):** Gửi file 1–1 hoặc tới tất cả người online (`#all` / `/sendfile all`), ghi tạm `.part`, kiểm tra kích thước và mã băm SHA-256 trước khi hoàn tất.
-- **Hai giao diện đồng bộ:** Terminal CLI (`prompt_toolkit`) và Desktop GUI (`PySide6`) dùng chung protocol và lõi xử lý.
+- **Khám phá máy chủ tự động (LAN Discovery):** Client tự động dò tìm máy chủ trong mạng LAN qua `UDP_DISCOVER` hoặc cho phép chỉ định trực tiếp `<host>:<port>`.
+- **Bảo mật kênh truyền & Phiên hoạt động:** Kết nối TCP được bọc TLS (`>= TLSv1.2`, xác thực CA riêng và SNI `collab-server.local`); cơ chế `UDP_HEARTBEAT` sử dụng chữ ký HMAC-SHA256 kèm mốc thời gian Unix mili-giây tăng nghiêm ngặt để phát hiện mất kết nối và chống giả mạo/replay.
+- **Nhắn tin thời gian thực:** Hỗ trợ cả chat nhóm công khai (`BROADCAST_MESSAGE`) và nhắn tin riêng (`DIRECT_MESSAGE`) kèm phản hồi trạng thái giao nhận (`DELIVERY_STATUS`).
+- **Truyền tập tin an toàn:** Truyền đa khối (streaming theo chunk 64 KB), băm toàn vẹn SHA-256, ghi tệp tạm `.part` cô lập và tự động thu dọn khi hủy hoặc ngắt kết nối; hỗ trợ truyền 1–1 lẫn phát tới mọi người dùng đang online (`all` / `#all`).
+- **Hai chế độ giao diện Client:**
+  - **Desktop GUI (`PySide6`):** Quản lý danh sách hội thoại (`#all` và từng người dùng), đếm tin chưa đọc, khung soạn thảo đa dòng, bọc từ cho chuỗi dài, khung theo dõi và hủy tiến độ truyền file theo thời gian thực.
+  - **CLI (`prompt_toolkit`):** Hỗ trợ đầy đủ lệnh tương tác với thanh trạng thái tiến độ một dòng ở đáy màn hình, không làm gián đoạn luồng đọc tin nhắn.
 
-## Yêu cầu
+## Yêu cầu môi trường & Cài đặt
 
-- Python 3.12 trở lên.
-- Kết nối mạng cho TCP port `5000` và UDP port `5001`.
-- Mạng dùng thư viện chuẩn Python (`socket`, `ssl`, `threading`, `json`); CLI dùng `prompt_toolkit` để giữ prompt và dòng đang nhập ổn định khi có tin đến; Desktop GUI dùng `PySide6`.
-- Server cần khóa riêng TLS khớp với `certs/server-cert.pem`. Mặc định cấu hình tìm khóa tại `certs/private/server-key.pem`. Khóa riêng không được đưa vào Git và không có trong checkout sạch. Nhận khóa phát triển từ người quản lý chứng chỉ của nhóm hoặc cấu hình một bộ CA/chứng chỉ/khóa phát triển mới đồng bộ cho server và client trước khi chạy.
+- **Python:** 3.12 trở lên (khuyến nghị chạy trong virtual environment `.venv`).
+- **Thư viện phụ thuộc:** Khai báo trong [requirements.txt](requirements.txt) gồm `prompt_toolkit>=3.0,<4` và `PySide6>=6.7,<7`.
 
-## Cài đặt
-
-Clone repository và mở terminal tại thư mục gốc dự án. Có thể tạo môi trường ảo riêng:
-
-```powershell
-# Thay 3.13 bằng phiên bản Python >= 3.12 có trên máy nếu cần.
-py -3.13 -m venv .venv
+```bash
+python -m venv .venv
+# Windows (PowerShell):
 .\.venv\Scripts\Activate.ps1
-```
-
-Trên macOS/Linux:
-
-```bash
-python3 -m venv .venv
+# Linux / macOS:
 source .venv/bin/activate
+
+pip install -r requirements.txt
 ```
 
-Sau khi kích hoạt môi trường ảo, cài toàn bộ dependency (cho CLI và GUI):
+Nếu cần tùy chỉnh cổng hoặc đường dẫn chứng chỉ cục bộ, sao chép [config.example.json](config.example.json) thành `config.json` trước khi chạy (chi tiết xem [docs/configuration.md](docs/configuration.md)).
 
-```powershell
-python -m pip install -r requirements.txt
-```
+> **Chứng chỉ TLS phát triển:** Gói nộp ZIP tạo từ `scripts/package_submission.py` giữ sẵn `certs/dev-ca.pem`, `certs/server-cert.pem` và `certs/private/server-key.pem` (chỉ loại `certs/private/dev-ca-key.pem`) để chạy thử nghiệm cục bộ. Nếu clone từ Git (thư mục `certs/private/` bị bỏ qua theo `.gitignore`), có thể tạo lại cặp CA và chứng chỉ server phát triển bằng OpenSSL:
+>
+> ```bash
+> mkdir -p certs/private
+> openssl genrsa -out certs/private/dev-ca-key.pem 2048
+> openssl req -x509 -new -nodes -key certs/private/dev-ca-key.pem -sha256 \
+>   -days 365 -subj "/CN=Collab-Dev-CA" -out certs/dev-ca.pem
+> openssl genrsa -out certs/private/server-key.pem 2048
+> openssl req -new -key certs/private/server-key.pem \
+>   -subj "/CN=collab-server.local" -out certs/private/server.csr
+> openssl x509 -req -in certs/private/server.csr -CA certs/dev-ca.pem \
+>   -CAkey certs/private/dev-ca-key.pem -CAcreateserial \
+>   -out certs/server-cert.pem -days 365 -sha256 -extfile certs/server.ext
+> ```
 
-Trên macOS/Linux dùng cùng lệnh `python -m pip install -r requirements.txt`.
+## Hướng dẫn sử dụng
 
-## Cấu hình và TLS
-
-Ứng dụng dùng `config.example.json` nếu chưa có `config.json`. Tạo bản cấu hình cục bộ khi cần đổi IP/port hoặc đường dẫn chứng chỉ:
-
-```powershell
-Copy-Item config.example.json config.json
-```
-
-macOS/Linux:
+### 1. Khởi chạy Server
 
 ```bash
-cp config.example.json config.json
-```
-
-`config.json` được `.gitignore` bỏ qua. Mặc định server bind vào `0.0.0.0:5000`; UDP discovery/heartbeat dùng port `5001`. Client tin CA tại `certs/dev-ca.pem` và xác minh tên `collab-server.local`.
-
-Trước khi chạy server, kiểm tra rằng đường dẫn `tls.server_private_key` trong cấu hình tồn tại và khóa đó khớp với `tls.server_certificate`. Không commit khóa riêng TLS. Nếu muốn tạo bộ chứng chỉ phát triển mới, cần cấu hình cùng CA tin cậy cho client và tên máy chủ có trong SAN của chứng chỉ.
-
-## Chạy ứng dụng
-
-Mở một terminal ở thư mục gốc và chạy server:
-
-```powershell
 python -m infrastructure.server
 ```
 
-Trên macOS/Linux dùng `python3 -m infrastructure.server`.
+Server mở đồng thời cổng lắng nghe TCP bọc TLS (mặc định `5000`) và cổng UDP Discovery/Heartbeat (mặc định `5001`).
 
-Mở một terminal khác cho mỗi client (chọn **Desktop GUI** hoặc **CLI**):
+### 2. Khởi chạy Client
 
-**Chạy Desktop GUI (PySide6):**
+- **Giao diện Desktop (PySide6):**
+  ```bash
+  python -m ui.gui
+  ```
+- **Giao diện dòng lệnh (CLI):**
+  ```bash
+  python -m ui.cli
+  ```
 
-```powershell
-python -m ui.gui
-```
+Các lệnh trong CLI (hoặc nhập văn bản trực tiếp để gửi chat chung):
 
-**Hoặc chạy CLI:**
+| Lệnh | Chức năng |
+| :--- | :--- |
+| `/online` | Xem danh sách người dùng đang trực tuyến |
+| `/msg <user> <nội dung>` | Gửi tin nhắn riêng cho `<user>` |
+| `/all <nội dung>` | Gửi tin nhắn chung tới mọi người |
+| `/sendfile <user> <path>` | Gửi tập tin cho một người dùng cụ thể |
+| `/sendfile all <path>` | Gửi tập tin tới toàn bộ người dùng khác đang trực tuyến |
+| `/help` | Hiển thị hướng dẫn lệnh |
+| `/quit` | Đăng xuất an toàn và thoát chương trình |
 
-```powershell
-python -m ui.cli
-```
+### 3. Công cụ phụ trợ
 
-Trên macOS/Linux dùng `python3 -m ui.gui` hoặc `python3 -m ui.cli`. Mỗi client cần một username duy nhất, dài 3–20 ký tự ASCII, chỉ gồm chữ, số và `_`.
+- **Mô phỏng nhiều client cùng lúc:**
+  ```bash
+  python scripts/simulate_clients.py
+  ```
+- **Đóng gói mã nguồn sạch (loại bỏ tệp rác, khóa riêng CA, bản build tạm):**
+  ```bash
+  python scripts/package_submission.py
+  ```
 
-Để thử trên hai máy trong cùng LAN hoặc 4G hotspot, chạy server trên một máy, cho phép TCP `5000` và UDP `5001` qua firewall (hoặc chuyển mạng sang Private), rồi chạy client trên các máy cùng mạng. Nếu môi trường mạng chặn UDP broadcast (như Wi-Fi trường học), cả CLI và Desktop GUI đều hỗ trợ nhập IPv4 của server để kết nối trực tiếp.
+## Kiểm thử tự động
 
-## Lệnh CLI
+Chạy toàn bộ **120** unit test và integration test (bao gồm kiểm thử loopback trực tiếp qua UDP + TLS):
 
-| Lệnh | Tác dụng |
-|---|---|
-| `/online` | Xem username đang online. |
-| `/msg <username> <nội dung>` | Gửi tin riêng. |
-| `/all <nội dung>` | Gửi chat chung. |
-| `/sendfile <username|all> <đường_dẫn_file>` | Gửi file tới một người dùng hoặc tới tất cả người đang online (`all` / `#all`). |
-| `/help` | Hiện hướng dẫn. |
-| `/quit` | Đăng xuất và đóng kết nối. |
-
-Có thể nhập văn bản thường để gửi chat chung. Tin đến được nhận ở luồng nền khi CLI đang chờ nhập.
-Server và CLI tự cấu hình console UTF-8 để hiển thị tiếng Việt trên Windows.
-
-### Hướng dẫn truyền file (`/sendfile`)
-
-- Cú pháp: `/sendfile <username|all> <đường_dẫn_file>` (hỗ trợ cả đường dẫn có khoảng trắng hoặc bọc trong dấu ngoặc kép `"..."`). Dùng `all` (hoặc `#all`) để gửi file tới tất cả người dùng đang online; trên Desktop GUI, có thể gửi file ngay trong kênh `#all` (Chat chung) hoặc trong tin nhắn riêng.
-- Trong lúc truyền, CLI hiển thị thanh tiến trình `[=====>---------] %` trực tiếp ngay trên dòng nhập lệnh `Bạn> ` ở cả máy gửi và máy nhận mà không làm trôi lịch sử chat; trên Desktop GUI, tiến trình hiển thị ở panel **Truyền file** góc dưới bên trái.
-- File nhận được ghi tạm vào `downloads/.<session_id>_<filename>.part`, kiểm tra kích thước và mã băm **SHA-256** trước khi đổi tên thành file hoàn chỉnh trong thư mục `downloads/` (tự động đánh số `file (1).ext` nếu trùng tên). Nếu mất kết nối hoặc sai mã băm, file `.part` sẽ tự động được dọn sạch.
-
-## Kiểm thử tự động (Unit Tests)
-
-Chạy toàn bộ bộ test suite (97 tests) bao phủ hạ tầng, chat, truyền file và PySide6 GUI:
-
-```powershell
+```bash
 python -m unittest discover -s tests -t . -v
 ```
 
-## Đóng gói nộp bài (Packaging)
+Chạy riêng kịch bản kiểm thử nhanh luồng truyền file cục bộ:
 
-Tạo file ZIP nộp bài (tự động loại trừ khóa riêng CA `dev-ca-key.pem`, `.venv`, cache và file tạm):
-
-```powershell
-python scripts/package_submission.py
+```bash
+python -m tests.transfer.quick_local_test
 ```
 
-File ZIP được lưu tại `dist/Distributed-Client-Server-Collaboration-Application.zip`.
+## Cấu trúc dự án
 
-## Cấu trúc liên quan
+```text
+.
+├── certs/            # Chứng chỉ CA phát triển và cặp khóa/chứng chỉ TLS của Server
+├── chat/             # Định tuyến, kiểm tra hợp lệ và xử lý tin nhắn chat (Client & Server)
+├── common/           # Định nghĩa thông điệp, cấu hình tập trung, TCP framing và console UTF-8
+├── docs/             # Tài liệu kiến trúc, giao thức, cấu hình, kết quả kiểm thử và sơ đồ tuần tự
+├── downloads/        # Thư mục mặc định lưu tệp nhận về phía Client
+├── infrastructure/   # Lõi mạng: Server TCP/TLS, UDP Discovery/Heartbeat, UserRegistry, Auth, Dispatcher
+├── report/           # Mã nguồn LaTeX và tài liệu báo cáo đồ án
+├── scripts/          # Script đóng gói nộp bài và mô phỏng tải nhiều client
+├── specification/    # Tài liệu đặc tả đề bài
+├── tests/            # Bộ kiểm thử tự động theo từng phân hệ (chat, infrastructure, transfer, ui)
+├── transfer/         # Phân hệ truyền tập tin: toàn vẹn SHA-256, Sender, Receiver, Server relay
+└── ui/               # Giao diện người dùng (CLI và Desktop PySide6 GUI)
+```
 
-- `common/`: frame TCP, tên các loại bản tin và cấu hình console.
-- `infrastructure/`: server, kết nối client, TLS, UDP và session.
-- `chat/`: handler chat phía server và logic chat phía client.
-- `ui/cli.py`: lệnh, hiển thị CLI và thanh tiến trình truyền file thời gian thực.
-- `ui/gui/`: giao diện desktop PySide6 (Login, `#all`, DM, Online list, Transfer drawer).
-- `transfer/`: module truyền file trọn luồng (`sender.py`, `receiver.py`, `server_handler.py`, `integrity.py`).
-- `docs/protocol.md`: đặc tả bản tin và framing.
-- `docs/architecture.md`: thành phần, sequence diagram chat/truyền file và luồng xử lý.
-- `docs/diagrams/`: ảnh biểu đồ sequence diagram (`chat_sequence.png`, `file_transfer_sequence.png`).
-- `docs/test_results.md`: kết quả kiểm thử hạ tầng, chat, truyền file và GUI.
+## Tài liệu liên quan
 
-## Biểu đồ thiết kế
-
-Các biểu đồ tuần tự (sequence diagram) cho chat và truyền file được lưu trong `docs/diagrams/` và nhúng trực tiếp trong `docs/architecture.md`.
+- Kiến trúc hệ thống: [docs/architecture.md](docs/architecture.md)
+- Đặc tả giao thức & thông điệp: [docs/protocol.md](docs/protocol.md)
+- Tham số cấu hình hệ thống: [docs/configuration.md](docs/configuration.md)
+- Tổng hợp kết quả kiểm thử: [docs/test_results.md](docs/test_results.md)

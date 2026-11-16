@@ -1,49 +1,42 @@
-# Kết quả kiểm thử hệ thống
+# Tổng hợp Kết quả Kiểm thử
 
-## Môi trường
+Hệ thống kiểm thử tự động sử dụng thư viện chuẩn `unittest` của Python, kết hợp kiểm thử đơn vị cho từng thành phần, kiểm thử giao diện GUI ngoài màn hình (`offscreen`) và kiểm thử tích hợp loopback thực tế qua TLS + UDP.
 
-- Windows, chạy lệnh bằng PowerShell (`.venv`).
-- Python 3.13, raw sockets (`socket`), TLS qua Python `ssl`, JSON framing dùng chung, `prompt_toolkit` (CLI) và `PySide6` (Desktop GUI).
+## Môi trường & Lệnh thực thi
 
-## Kiểm thử tự động (97/97 Đạt)
+- Chạy toàn bộ bộ kiểm thử tự động:
+  ```bash
+  python -m unittest discover -s tests -t . -v
+  ```
+- Chạy kịch bản kiểm thử nhanh phân hệ truyền file cục bộ:
+  ```bash
+  python -m tests.transfer.quick_local_test
+  ```
+- Tổng số ca kiểm thử tự động: **120 tests** — kết quả **120/120 đạt (`OK`)** (không lỗi, không cảnh báo rò rỉ file handle).
 
-Chạy bằng `python -m unittest discover -s tests -t . -v` hoặc `python -m pytest -q` → **97/97 bài test ĐẠT (OK)**:
+## Phạm vi kiểm thử theo phân hệ
 
-- `tests/infrastructure/test_server_infrastructure.py` (21 tests): Đăng ký user, danh sách online, từ chối login trùng (`USERNAME_TAKEN`), xác thực heartbeat HMAC-SHA256 kèm anti-replay timestamp và IP, timeout dọn dẹp stale sessions; chuẩn hóa username; đóng frame TCP 4-byte header, ghép mảnh TCP bị phân mẩu (`3-byte chunks`), bắt lỗi EOF/malformed JSON; định tuyến dispatcher.
-- `tests/chat/test_chat_regressions.py` (5 tests): Chặn gửi tin nhắn cho chính mình, xử lý callback an toàn, từ chối ký tự Unicode lỗi, tích hợp CLI.
-- `tests/transfer/test_integrity.py` (9 tests): Tính SHA-256 theo chunk, trích xuất metadata file thường/file rỗng, phát hiện lệch kích thước và lệch mã băm SHA-256.
-- `tests/transfer/test_sender.py` (15 tests): Khởi tạo `FILE_INIT`, truyền chunk ở luồng nền sau `FILE_ACCEPT`, xử lý đường dẫn có dấu ngoặc kép/khoảng trắng, hủy truyền, thanh tiến trình CLI và callback sự kiện có cấu trúc (`on_event`).
-- `tests/transfer/test_receiver.py` (12 tests): Tạo file `.part`, chống Path Traversal (`../../`, `..\..\`, `.`, `..`, `session_id` độc hại), kiểm tra thứ tự chunk, tự động đánh số `file (1).ext` khi trùng tên, xóa `.part` khi sai hash hoặc ngắt kết nối, khóa file và quét dọn `.part` rác khi khởi động.
-- `tests/transfer/test_server_handler.py` (16 tests): Định tuyến `FILE_INIT`/`FILE_CHUNK`/`FILE_END`/`FILE_RESULT`, kiểm tra metadata (chặn `/`, `\`, `:`, `..` trong `filename` và `session_id`), từ chối trùng `session_id`, State Machine nghiêm ngặt, dọn phiên treo (`prune_stale_sessions`) và báo `ERR_PEER_DISCONNECTED` khi một phía rớt mạng.
-- `tests/transfer/test_transfer.py` (6 tests): Kiểm thử End-to-End 5 kịch bản (file rỗng 0B, file nhỏ 1 chunk, file lớn đa chunk, file nhị phân raw bytes `0..255`, sửa đổi dữ liệu và ngắt kết nối đột ngột).
-- `tests/ui/test_gui_session_and_models.py` (13 tests): Kiểm thử `ChatSessionStore` (routing `#all`/DM, unread), `MessageListModel` (giới hạn bộ nhớ), trạng thái `AWAITING_VERIFICATION` → `COMPLETED`, chống double-connect, throttle progress, lọc callback phiên cũ (`session_gen`), phân biệt lỗi handler với ngắt kết nối đột ngột của `client-receiver`, đóng `session.close()` và dọn `ft.cleanup()` khi rớt mạng/nhận `BYE`, và gửi file broadcast (`#all` / `/sendfile all`).
+### 1. Hạ tầng mạng & Tích hợp End-to-End (`tests/infrastructure/test_server_infrastructure.py`)
+- Kiểm tra chuẩn hóa username (`3..20` ký tự ASCII hợp lệ), tách frame TCP bị phân mảnh nhiều gói, từ chối frame vượt quá `1 MB` và JSON sai định dạng.
+- Kiểm tra định tuyến trong `MessageDispatcher`, quản lý phiên `UserRegistry` (trùng tên, dọn phiên hết hạn, khóa đối chiếu định danh socket `remove_if_same`).
+- Kiểm tra xác thực `UDP_HEARTBEAT` bằng HMAC-SHA256 (lệch đồng hồ, sai IP, replay timestamp cũ, sai kiểu dữ liệu/bool), cùng lọc phản hồi `UDP_DISCOVERY_RESPONSE` sai kiểu.
+- Kiểm tra tính toàn vẹn của phiên vừa đăng nhập lại khi luồng kết nối cũ thoát muộn; kiểm tra đầu vào `ClientSession.connect` và đóng an toàn trong `logout`.
+- **Kiểm thử Live TLS + UDP Loopback E2E:** Khởi chạy server thật với chứng chỉ TLS (`certs/`) và UDP service thật trên cổng ephemeral; chạy trọn quy trình `discover_server()`, đăng nhập 2 client `alice` và `bob`, giữ heartbeat HMAC, trao đổi tin nhắn broadcast/direct và truyền file nhị phân đa chunk (~78 KB) kèm kiểm chứng SHA-256 tệp đích.
 
-## Kết quả
+### 2. Nghiệp vụ Chat & Giao diện dòng lệnh (`tests/chat/test_chat_regressions.py`)
+- Chặn gửi tin nhắn riêng cho chính bản thân ở cả server handler và CLI.
+- Từ chối chuỗi Unicode surrogate không hợp lệ ở cả `ClientChat` và server mà không làm văng exception kết nối.
+- Đảm bảo callback báo lỗi của UI không làm sập luồng đọc mạng nền; kiểm tra luồng in bất đồng bộ tương thích `prompt_toolkit`.
+- Kiểm tra hướng dẫn cú pháp cho lệnh thiếu đối số (`/msg`, `/all`, `/sendfile`) và hoàn tác hàng đợi `/sendfile all` khi gửi yêu cầu `LIST_ONLINE` thất bại.
 
-| Kịch bản | Kết quả | Ghi chú |
-|---|---|---|
-| UDP discovery qua loopback | Đạt | Client tìm được server và nhận TCP port 5000. |
-| UDP discovery qua địa chỉ interface `192.168.56.1` | Đạt | Client tìm được server tại địa chỉ này và đăng nhập. Đây chưa phải bằng chứng kiểm thử giữa hai máy vật lý. |
-| Login, echo, danh sách online, tin riêng | Đạt | Các luồng cơ bản đã được chạy thủ công. |
-| Heartbeat khi client còn hoạt động | Đạt theo kiểm thử thủ công | Client để idle vẫn giữ session online nhờ heartbeat. |
-| Heartbeat stale | Đạt theo kiểm thử thủ công | Khi heartbeat ngừng, server xóa username khỏi registry và đóng TCP sau timeout. Cấu hình hiện tại: gửi 10 giây/lần, timeout 35 giây. |
-| TLS client-server | Đạt theo kiểm thử thủ công | Ứng dụng trao đổi được qua TLS. `openssl verify -CAfile certs/dev-ca.pem certs/server-cert.pem` trả `certs/server-cert.pem: OK`. |
-| Xác minh hostname trong chứng chỉ | Đạt theo kiểm tra chứng chỉ | Chứng chỉ được xác minh với tên `collab-server.local`. |
-| Truyền file lớn & tương tác GUI ↔ CLI | Đạt | Truyền file **24 MB** giữa GUI ↔ GUI song song với chat; truyền file 2 chiều GUI ↔ CLI khớp `SHA-256`; kiểm tra file PDF `3.1 MB` và `163.0 MB` qua CLI/LAN. |
-| Ngắt kết nối giữa lúc truyền file | Đạt | Ngắt socket khi đang truyền file 12 MB: GUI tự quay về màn hình Login, không báo hoàn tất giả và dọn sạch file `.part` trong `downloads/`. |
-| Gửi file tới mọi người (`#all` / `/sendfile all`) | Đạt | Đã kiểm thử unit test (3 tests) và E2E fan-out qua server TLS tới tất cả peer đang online. |
-| 20 client đồng thời gửi/nhận | Đạt | Đã xác minh cả bằng `python -m scripts.simulate_clients --host 127.0.0.1 --clients 20` và kịch bản E2E 20 client (GUI + CLI + session) phát/nhận broadcast thật. |
-| Từ chối chứng chỉ không tin cậy | Đạt | Kết nối TLS không dùng CA tin cậy (`certs/dev-ca.pem`) bị từ chối với `TLSV1_ALERT_UNKNOWN_CA`. |
+### 3. Truyền tập tin & Toàn vẹn dữ liệu (`tests/transfer/`)
+- `test_integrity.py`: Kiểm tra `SHA-256`, metadata tệp 0 byte / nhiều chunk, kiểm chứng size/hash và các hàm làm sạch/ràng buộc (`is_valid_transfer_id`, `is_safe_filename`, `sanitize_filename`, `parse_non_negative_int`).
+- `test_receiver.py`: Kiểm tra tệp 0 byte, ghi nhiều chunk và kiểm tra SHA-256, chống trùng tên tệp đích, chặn path traversal POSIX/Windows/tên rỗng, chống ép kiểu `bool` ở `filesize`/`total_chunks`/`chunk_index`, xóa tệp `.part` mồ côi lúc khởi động nhưng giữ nguyên các file hoàn chỉnh có chứa `.part` như `archive.part1.rar`.
+- `test_sender.py`: Kiểm tra phát `FILE_INIT`, stream nền theo `FILE_ACCEPT`, chống khởi tạo trùng luồng worker khi nhận nhiều `FILE_ACCEPT`, hủy phiên đang truyền, xóa sạch session trên `cleanup()`, kiểm tra đường dẫn rỗng ở `send_file()`, cô lập lỗi giải mã Base64 theo từng phiên để không ảnh hưởng lượt tải song song khác, và giữ nguyên `direction`/`peer` trong sự kiện `FILE_ERROR` phía người tải.
+- `test_server_handler.py`: Kiểm tra đăng ký toàn bộ `FILE_*` handlers, kiểm tra metadata (`filename`, `session_id`, `filesize`, `bool`, `receiver` rỗng, tự gửi cho bản thân), xác thực máy trạng thái & phân quyền vai trò, thu dọn `timeout` và ngắt kết nối (kể cả không gửi trùng lỗi sau khi phiên đã kết thúc bằng `FILE_RESULT`/`FILE_ERROR`), cùng cô lập `ValueError` vs `OSError` trong bridge gửi dữ liệu.
+- `test_transfer.py` & `quick_local_test.py`: Xác nhận truyền tải end-to-end (tệp rỗng 0 byte, tệp nhỏ, tệp nhiều chunk, dữ liệu nhị phân thô `0..255`, ngắt kết nối đột ngột dọn `.part`, sai lệch hash).
 
-## Lệnh mô phỏng nhiều client
-
-```powershell
-python -m scripts.simulate_clients --host 127.0.0.1 --clients 20
-```
-
-Script tạo 20 client TLS đồng thời. Barrier giữ các session mở cho đến khi tất cả client đã đăng nhập và nhận phản hồi echo; sau đó mỗi client gửi QUIT và chờ BYE.
-
-## Giới hạn & Hạng mục tự kiểm tra trên máy
-
-- TLS mã hóa toàn bộ luồng TCP (đăng nhập, chat và truyền file); UDP heartbeat được xác thực bằng chữ ký HMAC-SHA256 kèm timestamp chống replay (không truyền raw `heartbeat_token` qua UDP).
-- Gõ tiếng Việt bằng bộ gõ IME (UniKey Telex/VNI) và hiển thị trên màn hình Windows DPI scaling `125%–200%` được kiểm tra trực tiếp trên máy người dùng.
+### 4. Giao diện Desktop PySide6 GUI (`tests/ui/test_gui_session_and_models.py`)
+- Kiểm tra định tuyến và bộ đếm chưa đọc trong `ChatSessionStore`, giới hạn 1000 bản ghi trong `MessageListModel`, hoàn tất transfer chỉ xảy ra sau khi bên nhận xác nhận toàn vẹn (`FILE_RESULT`), và bọc từ cho chuỗi dài không khoảng trắng trong `MessageBubbleDelegate.sizeHint`.
+- Kiểm tra `SessionController`: chặn đăng nhập trùng khi đang kết nối, giữ lại mốc `100%` và Completion bất chấp throttling ~15 Hz, ép kiểu an toàn payload tiến độ, dọn dẹp 1 lần khi mất kết nối bất ngờ hoặc nhận `BYE`, và từ chối an toàn các lệnh gọi sau `shutdown_sync()`.
+- Kiểm tra `MainWindow` ở chế độ `QT_QPA_PLATFORM=offscreen`: bỏ qua sự kiện thuộc generation kết nối cũ, fan-out gửi file broadcast, chặn gửi tin nhắn khi mất kết nối hoặc vượt `65536` byte UTF-8 mà không làm mất nội dung đang soạn thảo, và làm sạch composer/error banner khi chuyển phiên kết nối.
