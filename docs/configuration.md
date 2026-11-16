@@ -1,6 +1,6 @@
 # Tài liệu Cấu hình Hệ thống
 
-Hệ thống nạp cấu hình tập trung tại [common/app_config.py](../common/app_config.py). Khi khởi động, chương trình đọc [config.example.json](../config.example.json) làm cấu hình nền chuẩn, sau đó ghi đè đệ quy từng khóa có mặt trong `config.json` (nếu tệp `config.json` tồn tại ở thư mục gốc dự án).
+Hệ thống nạp cấu hình tập trung tại [common/app_config.py](../common/app_config.py). Khi khởi động, chương trình đọc tệp `config.json` ở thư mục gốc dự án (chỉ dùng [config.example.json](../config.example.json) làm cấu hình mặc định khi chưa có `config.json`). Khi sử dụng `config.json`, tệp phải khai báo đầy đủ các nhóm và tham số hợp lệ; nếu thiếu khóa hoặc sai kiểu/miền giá trị (cổng, timeout, kích thước bản tin), hệ thống sẽ báo lỗi `ValueError` ngay khi khởi động.
 
 ## Các nhóm tham số cấu hình
 

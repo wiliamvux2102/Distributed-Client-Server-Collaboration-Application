@@ -28,8 +28,10 @@ Mỗi thông điệp trên kênh TCP/TLS có cấu trúc:
 | Client -> Server | `LIST_ONLINE` | — | Yêu cầu danh sách người dùng đang trực tuyến |
 | Server -> Client | `ONLINE_LIST` | `users` | Danh sách username đang online (đã sắp xếp) |
 | Client -> Server | `ECHO` | `text` | Gửi kiểm tra vòng lặp echo |
-| Server -> Client | `ECHO_RESULT` | `text` | Phản hồi nội dung echo (hoặc `ERROR` với mã `INVALID_TEXT`) |
-| `BYE` | S -> C | `message` | Xác nhận đóng phiên sạch theo yêu cầu `QUIT` |
+| Server -> Client | `ECHO_RESULT` | `text` | Phản hồi nội dung echo |
+| Client -> Server | `QUIT` | — | Yêu cầu đóng phiên kết nối sạch |
+| Server -> Client | `BYE` | `message` | Xác nhận đóng phiên theo yêu cầu `QUIT` |
+| Server -> Client | `ERROR` | `code`, `message` | Báo lỗi yêu cầu không hợp lệ hoặc loại bản tin chưa hỗ trợ (`INVALID_TEXT`, `UNKNOWN_TYPE`) |
 
 ---
 
@@ -56,7 +58,7 @@ Khi truyền trên kênh JSON chung, dữ liệu nhị phân của chunk đượ
 
 | `type` | Hướng hợp lệ | Trường dữ liệu chính |
 | :--- | :--- | :--- |
-| `FILE_INIT` | Sender -> Server -> Receiver | `session_id`, `sender`, `receiver` (hoặc `recipient`), `filename`, `filesize`, `sha256`, `chunk_size`, `total_chunks` |
+| `FILE_INIT` | Sender -> Server -> Receiver | `session_id`, `sender`, `receiver` (hoặc `recipient`), `filename`, `filesize`, `sha256`, `chunk_size`, `total_chunks`, `is_broadcast` *(tùy chọn, bool)* |
 | `FILE_ACCEPT` | Receiver -> Server -> Sender | `session_id` |
 | `FILE_CHUNK` | Sender -> Server -> Receiver | `session_id`, `chunk_index`, `binary_payload_base64` |
 | `FILE_END` | Sender -> Server -> Receiver | `session_id` |
@@ -68,7 +70,9 @@ Khi truyền trên kênh JSON chung, dữ liệu nhị phân của chunk đượ
 - Vòng đời trạng thái hợp lệ trong `FileTransferServerHandler`:
   `INIT` --(`FILE_ACCEPT` bởi receiver)--> `ACCEPTED` --(`FILE_CHUNK` bởi sender)--> `TRANSFERRING` --(`FILE_END` bởi sender)--> `WAITING_RESULT` --(`FILE_RESULT` bởi receiver)--> `COMPLETED`.
 - Các thông điệp kết thúc (`FILE_RESULT`, `FILE_ERROR`) giải phóng ngay `ServerTransferSession` dưới khóa đồng bộ trước khi đẩy qua mạng; phiên không hoạt động quá `60` giây bị hàm `prune_stale_sessions` thu hồi và báo `ERR_SESSION_TIMEOUT`.
-- Server xác thực nghiêm ngặt: `session_id` hợp lệ (không rỗng, không khoảng trắng, không chứa `/`, `\`, `..`, `:`), `filename` là basename đơn hợp lệ, các trường số nguyên (`filesize`, `chunk_size`, `total_chunks`, `chunk_index`) không âm và từ chối kiểu `bool`, đồng thời ghi đè `header["sender"]` bằng danh tính kết nối TLS thực tế.
+- Server xác thực nghiêm ngặt: `session_id` hợp lệ (không rỗng, không khoảng trắng, không chứa `/`, `\`, `..`, `:`), `filename` là basename đơn hợp lệ, các trường số nguyên (`filesize`, `chunk_size`, `total_chunks`, `chunk_index`) không âm và từ chối kiểu `bool`, trường tùy chọn `is_broadcast` phải có kiểu `bool` (trả `ERR_INVALID_METADATA` nếu sai kiểu), đồng thời ghi đè `header["sender"]` bằng danh tính kết nối TLS thực tế.
+
+![Sơ đồ máy trạng thái phiên kết nối và truyền tập tin](diagrams/state_diagrams.png)
 
 ### Bảng mã lỗi truyền file (`FILE_ERROR`)
 
@@ -81,13 +85,12 @@ Khi truyền trên kênh JSON chung, dữ liệu nhị phân của chunk đượ
 | Phiên & Định tuyến | `ERR_SESSION_NOT_FOUND` | Phiên không tồn tại hoặc đã hết hạn |
 | Phiên & Định tuyến | `ERR_UNAUTHORIZED_ROLE` | Sai vai trò gửi frame (ví dụ `FILE_ACCEPT` không do receiver gửi) |
 | Phiên & Định tuyến | `ERR_INVALID_STATE` | Gửi thông điệp sai thứ tự máy trạng thái |
-| Phiên & Định tuyến | `ERR_SESSION_TIMEOUT` | Phiên truyền quá thời gian chờ không hoạt động |
+| Phiên & Định tuyến | `ERR_SESSION_TIMEOUT` | Phiên truyền quá thời gian chờ không hoạt động (60 giây) |
 | Phiên & Định tuyến | `ERR_PEER_DISCONNECTED` | Đối tác mất kết nối TCP/heartbeat giữa phiên truyền |
-| Toàn vẹn & I/O | `ERR_CORRUPT_PAYLOAD` | Chuỗi Base64 payload hỏng không giải mã được |
-| Toàn vẹn & I/O | `ERR_OUT_OF_ORDER_CHUNK` | `chunk_index` không khớp tuần tự mong đợi hoặc sai kiểu |
-| Toàn vẹn & I/O | `ERR_SIZE_MISMATCH` | Tổng dung lượng thực nhận khác `filesize` |
-| Toàn vẹn & I/O | `ERR_HASH_MISMATCH` | Mã SHA-256 tệp nhận được không khớp `sha256` |
-| Toàn vẹn & I/O | `ERR_DISK_IO` | Lỗi đọc hoặc ghi tệp cục bộ |
+| Giải mã payload | `ERR_CORRUPT_PAYLOAD` | Chuỗi Base64 payload hỏng không giải mã được |
+
+> [!NOTE]
+> Các lỗi kiểm tra ở phía `FileReceiver` (như sai thứ tự `chunk_index`, không khớp dung lượng, sai mã `SHA-256`, hoặc lỗi I/O ghi tệp đích) được báo qua `FILE_ERROR` (kèm `reason`) hoặc `FILE_RESULT` với `status="FAILED"` và mô tả trong trường `reason` (ngoài ra [common/message_types.py](../common/message_types.py) cũng định nghĩa sẵn các hằng số `ERR_HASH_MISMATCH`, `ERR_SIZE_MISMATCH`, `ERR_DISK_IO`).
 
 ---
 
@@ -120,4 +123,4 @@ Khi truyền trên kênh JSON chung, dữ liệu nhị phân của chunk đượ
   1. Sai lệch thời gian `|now_ms - ts| <= 30000` ms (`±30` giây).
   2. IP nguồn datagram trùng với IP kết nối TCP đã đăng nhập của `username`.
   3. `ts` tăng nghiêm ngặt so với heartbeat hợp lệ gần nhất (`ts > last_heartbeat_ts`) để chống replay attack.
-  4. Chữ ký khớp theo so sánh thời gian hằng (`secrets.compare_digest`).
+  4. Chữ ký khớp định dạng 64 ký tự hex ASCII và trùng khớp theo so sánh thời gian hằng (`secrets.compare_digest`); chữ ký sai định dạng hoặc chứa ký tự non-ASCII bị loại bỏ an toàn mà không làm gián đoạn luồng UDP.

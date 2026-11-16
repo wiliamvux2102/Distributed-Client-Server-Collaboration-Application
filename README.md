@@ -9,7 +9,7 @@ Hệ thống chat và truyền tập tin theo mô hình Client–Server hỗ tr�
 - **Nhắn tin thời gian thực:** Hỗ trợ cả chat nhóm công khai (`BROADCAST_MESSAGE`) và nhắn tin riêng (`DIRECT_MESSAGE`) kèm phản hồi trạng thái giao nhận (`DELIVERY_STATUS`).
 - **Truyền tập tin an toàn:** Truyền đa khối (streaming theo chunk 64 KB), băm toàn vẹn SHA-256, ghi tệp tạm `.part` cô lập và tự động thu dọn khi hủy hoặc ngắt kết nối; hỗ trợ truyền 1–1 lẫn phát tới mọi người dùng đang online (`all` / `#all`).
 - **Hai chế độ giao diện Client:**
-  - **Desktop GUI (`PySide6`):** Quản lý danh sách hội thoại (`#all` và từng người dùng), đếm tin chưa đọc, khung soạn thảo đa dòng, bọc từ cho chuỗi dài, khung theo dõi và hủy tiến độ truyền file theo thời gian thực.
+  - **Desktop GUI (`PySide6`):** Quản lý danh sách hội thoại (`#all` và từng người dùng), đếm tin chưa đọc, khung soạn thảo đa dòng, bọc từ cho chuỗi dài và khung theo dõi tiến độ truyền file theo thời gian thực.
   - **CLI (`prompt_toolkit`):** Hỗ trợ đầy đủ lệnh tương tác với thanh trạng thái tiến độ một dòng ở đáy màn hình, không làm gián đoạn luồng đọc tin nhắn.
 
 ## Yêu cầu môi trường & Cài đặt
@@ -81,7 +81,7 @@ Các lệnh trong CLI (hoặc nhập văn bản trực tiếp để gửi chat c
 
 - **Mô phỏng nhiều client cùng lúc:**
   ```bash
-  python scripts/simulate_clients.py
+  python -m scripts.simulate_clients
   ```
 - **Đóng gói mã nguồn sạch (loại bỏ tệp rác, khóa riêng CA, bản build tạm):**
   ```bash
@@ -90,7 +90,7 @@ Các lệnh trong CLI (hoặc nhập văn bản trực tiếp để gửi chat c
 
 ## Kiểm thử tự động
 
-Chạy toàn bộ **120** unit test và integration test (bao gồm kiểm thử loopback trực tiếp qua UDP + TLS):
+Chạy toàn bộ **129** unit test và integration test (bao gồm kiểm thử loopback trực tiếp qua UDP + TLS):
 
 ```bash
 python -m unittest discover -s tests -t . -v
@@ -109,12 +109,10 @@ python -m tests.transfer.quick_local_test
 ├── certs/            # Chứng chỉ CA phát triển và cặp khóa/chứng chỉ TLS của Server
 ├── chat/             # Định tuyến, kiểm tra hợp lệ và xử lý tin nhắn chat (Client & Server)
 ├── common/           # Định nghĩa thông điệp, cấu hình tập trung, TCP framing và console UTF-8
-├── docs/             # Tài liệu kiến trúc, giao thức, cấu hình, kết quả kiểm thử và sơ đồ tuần tự
+├── docs/             # Tài liệu kiến trúc, giao thức, cấu hình, kết quả kiểm thử và các sơ đồ
 ├── downloads/        # Thư mục mặc định lưu tệp nhận về phía Client
 ├── infrastructure/   # Lõi mạng: Server TCP/TLS, UDP Discovery/Heartbeat, UserRegistry, Auth, Dispatcher
-├── report/           # Mã nguồn LaTeX và tài liệu báo cáo đồ án
 ├── scripts/          # Script đóng gói nộp bài và mô phỏng tải nhiều client
-├── specification/    # Tài liệu đặc tả đề bài
 ├── tests/            # Bộ kiểm thử tự động theo từng phân hệ (chat, infrastructure, transfer, ui)
 ├── transfer/         # Phân hệ truyền tập tin: toàn vẹn SHA-256, Sender, Receiver, Server relay
 └── ui/               # Giao diện người dùng (CLI và Desktop PySide6 GUI)
