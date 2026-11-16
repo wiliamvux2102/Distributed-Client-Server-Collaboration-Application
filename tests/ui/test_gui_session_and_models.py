@@ -21,6 +21,7 @@ from ui.gui.controller import (
     ConnectResultEvent,
     OnlineListEvent,
     SessionController,
+    TransferSnapshotEvent,
 )
 from ui.gui.main_window import MainWindow
 from ui.gui.models import (
@@ -459,6 +460,119 @@ class GuiControllerAndWindowTests(unittest.TestCase):
             )
             self.assertEqual(window.composer.toPlainText(), "")
             self.assertTrue(window.error_banner.isHidden())
+        finally:
+            window.close()
+
+    def test_theme_toggle_and_sidebar_search_filter(self) -> None:
+        from PySide6.QtCore import Qt
+        from ui.gui.theme import PALETTE
+
+        _get_app()
+        ctrl = SessionController()
+        window = MainWindow(controller=ctrl)
+        try:
+            ctrl._session_gen = 3
+            window._on_connected(
+                ConnectResultEvent(gen=3, username="alice", server_host="127.0.0.1", server_port=5000)
+            )
+            window._on_online_list(OnlineListEvent(gen=3, users=("alice", "bob", "charlie")))
+            self.assertEqual(window.peer_list.count(), 2)
+
+            window.peer_search_input.setText("bob")
+            self.assertEqual(window.peer_list.count(), 1)
+            self.assertEqual(window.peer_list.item(0).data(Qt.ItemDataRole.UserRole), "bob")
+
+            window.peer_search_input.clear()
+            self.assertEqual(window.peer_list.count(), 2)
+
+            self.assertEqual(PALETTE["mode"], "dark")
+            window._toggle_theme()
+            self.assertEqual(PALETTE["mode"], "light")
+            window._toggle_theme()
+            self.assertEqual(PALETTE["mode"], "dark")
+        finally:
+            window.close()
+
+    def test_inline_file_card_upsert_and_inspector_toggle(self) -> None:
+        from PySide6.QtCore import Qt
+
+        _get_app()
+        ctrl = SessionController()
+        window = MainWindow(controller=ctrl)
+        try:
+            ctrl._session_gen = 4
+            window._on_connected(
+                ConnectResultEvent(
+                    gen=4,
+                    username="alice",
+                    server_host="127.0.0.1",
+                    server_port=5000,
+                    tls_version="TLSv1.3",
+                    tls_cipher="TLS_AES_256_GCM_SHA384",
+                )
+            )
+            self.assertEqual(window.tls_chip.text(), "TLSv1.3 Verified")
+            self.assertEqual(window.kv_cipher_val.text(), "TLS_AES_256_GCM_SHA384")
+
+            window._on_online_list(OnlineListEvent(gen=4, users=("alice", "bob")))
+            window.store.set_active_conversation("bob")
+            window._refresh_sidebar()
+            window._load_active_conversation()
+
+            window._on_transfer_event(
+                TransferSnapshotEvent(
+                    gen=4,
+                    event="progress",
+                    session_id="s1",
+                    direction="download",
+                    peer="bob",
+                    filename="spec.pdf",
+                    current=500,
+                    total=1000,
+                )
+            )
+            window._on_transfer_event(
+                TransferSnapshotEvent(
+                    gen=4,
+                    event="progress",
+                    session_id="s1",
+                    direction="download",
+                    peer="bob",
+                    filename="spec.pdf",
+                    current=1000,
+                    total=1000,
+                )
+            )
+            window._on_transfer_event(
+                TransferSnapshotEvent(
+                    gen=4,
+                    event="completed",
+                    session_id="s1",
+                    direction="download",
+                    peer="bob",
+                    filename="spec.pdf",
+                    current=1000,
+                    total=1000,
+                    saved_path="downloads/spec.pdf",
+                )
+            )
+
+            self.assertEqual(window.message_model.rowCount(), 1)
+            rec = window.message_model.index(0, 0).data(MessageListModel.RecordRole)
+            self.assertEqual(rec.kind, "file")
+            self.assertEqual(rec.file_state, "COMPLETED")
+            self.assertEqual(rec.saved_path, "downloads/spec.pdf")
+            self.assertEqual(window.transfer_count_lbl.text(), "1")
+
+            window._set_inspector_open(False)
+            self.assertFalse(window.toggle_inspector_btn.isChecked())
+            self.assertFalse(window.rail_files_btn.isChecked())
+            self.assertEqual(window.inspector_panel.maximumWidth(), 0)
+
+            window._set_inspector_open(True)
+            self.assertTrue(window.toggle_inspector_btn.isChecked())
+            self.assertTrue(window.rail_files_btn.isChecked())
+            self.assertEqual(window.inspector_panel.maximumWidth(), 328)
         finally:
             window.close()
 

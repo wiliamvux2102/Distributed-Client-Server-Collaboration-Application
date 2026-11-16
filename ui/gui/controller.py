@@ -32,6 +32,8 @@ class ConnectResultEvent:
     username: str
     server_host: str
     server_port: int | None
+    tls_version: str = "TLS"
+    tls_cipher: str = ""
 
 
 @dataclass(frozen=True)
@@ -243,6 +245,31 @@ class SessionController:
                 self._ft_manager = ft_manager
                 self._state = ConnectionState.CONNECTED
 
+            resolved_port = server_port
+            tls_version = "TLS"
+            tls_cipher = ""
+            conn_sock = getattr(session, "_connection", None)
+            if conn_sock is not None:
+                try:
+                    if resolved_port is None:
+                        peer_addr = conn_sock.getpeername()
+                        if isinstance(peer_addr, tuple) and len(peer_addr) >= 2:
+                            resolved_port = int(peer_addr[1])
+                except Exception:
+                    pass
+                try:
+                    ver = conn_sock.version()
+                    if isinstance(ver, str) and ver:
+                        tls_version = ver
+                except Exception:
+                    pass
+                try:
+                    ciph = conn_sock.cipher()
+                    if isinstance(ciph, tuple) and ciph and isinstance(ciph[0], str):
+                        tls_cipher = ciph[0]
+                except Exception:
+                    pass
+
             session.start()
             self.bridge.state_changed.emit(ConnectionState.CONNECTED.value)
             self.bridge.connected.emit(
@@ -250,7 +277,9 @@ class SessionController:
                     gen=gen,
                     username=session.username,
                     server_host=session.server_host,
-                    server_port=server_port,
+                    server_port=resolved_port,
+                    tls_version=tls_version,
+                    tls_cipher=tls_cipher,
                 )
             )
         except Exception as error:
