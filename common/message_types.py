@@ -1,1 +1,64 @@
-# TV1: Định nghĩa các loại bản tin và mã lỗi theo giao thức chung.
+# Server xác nhận đã tiếp nhận kết nối.
+SERVER_READY = "SERVER_READY"
+
+# Client yêu cầu server phản hồi lại nội dung.
+ECHO = "ECHO"
+
+# Server trả kết quả echo.
+ECHO_RESULT = "ECHO_RESULT"
+
+# Client yêu cầu kết thúc phiên.
+QUIT = "QUIT"
+
+# Server xác nhận kết thúc phiên.
+BYE = "BYE"
+
+# Server thông báo yêu cầu không hợp lệ.
+ERROR = "ERROR"
+
+# Authentication
+LOGIN = "LOGIN"
+
+LOGIN_OK = "LOGIN_OK"
+
+LOGIN_ERROR = "LOGIN_ERROR"
+
+# ONLINE
+LIST_ONLINE = "LIST_ONLINE"
+
+ONLINE_LIST = "ONLINE_LIST"
+
+# Unicast
+DIRECT_MESSAGE = "DIRECT_MESSAGE"
+
+DIRECT_DELIVERY = "DIRECT_DELIVERY"
+
+DELIVERY_STATUS = "DELIVERY_STATUS"
+
+# Broadcast chat
+BROADCAST_MESSAGE = "BROADCAST_MESSAGE"
+
+BROADCAST_DELIVERY = "BROADCAST_DELIVERY"
+
+# UDP
+UDP_DISCOVER = "UDP_DISCOVER"
+
+UDP_DISCOVERY_RESPONSE = "UDP_DISCOVERY_RESPONSE"
+
+UDP_HEARTBEAT = "UDP_HEARTBEAT"
+
+# File Transfer
+FILE_INIT = "FILE_INIT"
+FILE_ACCEPT = "FILE_ACCEPT"
+FILE_CHUNK = "FILE_CHUNK"
+FILE_END = "FILE_END"
+FILE_RESULT = "FILE_RESULT"
+FILE_ERROR = "FILE_ERROR"
+
+# File Transfer Error Codes
+ERR_USER_OFFLINE = "ERR_USER_OFFLINE"
+ERR_SESSION_NOT_FOUND = "ERR_SESSION_NOT_FOUND"
+ERR_HASH_MISMATCH = "ERR_HASH_MISMATCH"
+ERR_SIZE_MISMATCH = "ERR_SIZE_MISMATCH"
+ERR_DISK_IO = "ERR_DISK_IO"
+ERR_PEER_DISCONNECTED = "ERR_PEER_DISCONNECTED"
