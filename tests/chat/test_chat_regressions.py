@@ -89,6 +89,60 @@ class CliPromptTests(unittest.TestCase):
 
         print_mock.assert_called_once_with("background event", flush=True)
 
+    def test_bare_commands_show_usage_hints_instead_of_invalid_command(self) -> None:
+        session = Mock()
+        session.username = "alice"
+        chat = Mock()
+
+        for bare_cmd, expected_fragment in (
+            ("/msg", "Cách dùng: /msg"),
+            ("/all", "Cách dùng: /all"),
+            ("/sendfile", "Cách dùng: /sendfile"),
+            ('/sendfile bob ""', "Cách dùng: /sendfile"),
+        ):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                should_continue = cli._process_input(bare_cmd, session, chat)
+            self.assertTrue(should_continue)
+            self.assertIn(expected_fragment, buf.getvalue())
+
+        chat.send_direct.assert_not_called()
+        chat.send_broadcast.assert_not_called()
+
+    def test_sendfile_all_rolls_back_pending_queue_when_list_online_send_fails(self) -> None:
+        import tempfile
+        import threading
+
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            tf.write(b"payload")
+            tmp_path = Path(tf.name)
+
+        try:
+            session = Mock()
+            session.username = "alice"
+            session.send.side_effect = OSError("socket closed")
+            chat = Mock()
+            ft_mgr = Mock()
+            pending: list[str] = []
+            lock = threading.Lock()
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                keep_going = cli._process_input(
+                    f'/sendfile all "{tmp_path}"',
+                    session,
+                    chat,
+                    ft_mgr,
+                    pending_broadcast_files=pending,
+                    pending_lock=lock,
+                )
+
+            self.assertTrue(keep_going)
+            self.assertEqual(pending, [])
+            self.assertIn("[LỖI]", buf.getvalue())
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
 
 if __name__ == "__main__":
     unittest.main()

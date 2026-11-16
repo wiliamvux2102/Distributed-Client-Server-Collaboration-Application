@@ -118,9 +118,9 @@ def _process_input(
         session.send({"type": mt.LIST_ONLINE})
         return True
 
-    if line.startswith("/msg "):
+    if line == "/msg" or line.startswith("/msg "):
         parts = line.split(maxsplit=2)
-        if len(parts) != 3:
+        if len(parts) != 3 or not parts[1].strip():
             print("Cách dùng: /msg <username> <nội dung>")
             return True
 
@@ -134,14 +134,17 @@ def _process_input(
             print(f"[RIÊNG tới {recipient}] {parts[2]}")
         return True
 
-    if line.startswith("/all "):
-        text = line[len("/all "):]
+    if line == "/all" or line.startswith("/all "):
+        text = line[len("/all "):] if line.startswith("/all ") else ""
+        if not text.strip():
+            print("Cách dùng: /all <nội dung>")
+            return True
         with _OUTPUT_LOCK:
             chat.send_broadcast(text)
             print(f"[CHUNG bạn] {text}")
         return True
 
-    if line.startswith("/sendfile "):
+    if line == "/sendfile" or line.startswith("/sendfile "):
         parts = line.split(maxsplit=2)
         if len(parts) != 3:
             print("Cách dùng: /sendfile <username> <đường_dẫn_file>")
@@ -149,6 +152,9 @@ def _process_input(
 
         recipient = parts[1].strip()
         filepath = parts[2].strip("\"' ")
+        if not recipient or not filepath:
+            print("Cách dùng: /sendfile <username> <đường_dẫn_file>")
+            return True
 
         if recipient in ("all", "#all"):
             if ft_manager is None:
@@ -158,12 +164,26 @@ def _process_input(
                 print(f"[ERROR] File not found: {filepath}")
                 return True
             if pending_broadcast_files is not None:
-                if pending_lock is not None:
-                    with pending_lock:
-                        pending_broadcast_files.append(filepath)
-                else:
-                    pending_broadcast_files.append(filepath)
-                session.send({"type": mt.LIST_ONLINE})
+                def _with_pending_lock(action) -> None:
+                    if pending_lock is not None:
+                        with pending_lock:
+                            action()
+                    else:
+                        action()
+
+                def _rollback_pending() -> None:
+                    for idx in range(len(pending_broadcast_files) - 1, -1, -1):
+                        if pending_broadcast_files[idx] == filepath:
+                            pending_broadcast_files.pop(idx)
+                            break
+
+                _with_pending_lock(lambda: pending_broadcast_files.append(filepath))
+                try:
+                    session.send({"type": mt.LIST_ONLINE})
+                except Exception as exc:
+                    _with_pending_lock(_rollback_pending)
+                    print(f"[LỖI] Không thể lấy danh sách người online: {exc}")
+                    return True
                 print("[FILE] Đang lấy danh sách người online để gửi file...")
             else:
                 print("[LỖI] Không thể gửi file broadcast trong ngữ cảnh này.")
