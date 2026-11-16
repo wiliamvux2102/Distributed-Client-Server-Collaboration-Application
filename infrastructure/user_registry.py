@@ -1,10 +1,14 @@
 import hashlib
 import hmac
+import re
 import socket
 import threading
 from dataclasses import dataclass, field
 import time
 import secrets
+
+
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def compute_heartbeat_hmac(token: str, username: str, timestamp_ms: int) -> str:
@@ -31,6 +35,9 @@ class UserRegistry:
         self._lock = threading.Lock()
 
     def refresh_heartbeat(self, token: str, source_ip: str) -> bool:
+        if not isinstance(token, str) or not token.isascii():
+            return False
+
         with self._lock:
             for session in self._users.values():
                 if (
@@ -56,6 +63,8 @@ class UserRegistry:
             or isinstance(timestamp_ms, bool)
             or not isinstance(timestamp_ms, int)
             or not isinstance(signature, str)
+            or not signature.isascii()
+            or _SHA256_HEX_RE.fullmatch(signature) is None
         ):
             return False
         now_ms = int(time.time() * 1000)
@@ -71,7 +80,11 @@ class UserRegistry:
             if timestamp_ms <= session.last_heartbeat_ts:
                 return False
             expected = compute_heartbeat_hmac(session.heartbeat_token, username, timestamp_ms)
-            if not secrets.compare_digest(expected, signature):
+            try:
+                matched = secrets.compare_digest(expected, signature)
+            except TypeError:
+                return False
+            if not matched:
                 return False
             session.last_heartbeat = time.monotonic()
             session.last_heartbeat_ts = timestamp_ms

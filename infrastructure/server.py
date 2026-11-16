@@ -277,6 +277,14 @@ def send_to_user(username: str, message: dict) -> bool:
 
         return True
 
+    except ValueError as error:
+        logging.getLogger(__name__).warning(
+            "[SERVER] Bỏ qua bản tin không tuần tự hóa được gửi tới '%s': %s",
+            username,
+            error,
+        )
+        return False
+
     except OSError:
         # Gửi thất bại: phiên có thể đã mất kết nối.
         try:

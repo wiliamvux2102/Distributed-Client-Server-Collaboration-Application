@@ -1,10 +1,14 @@
 import json
+import logging
 import socket
 import sys
 import threading
 from infrastructure.user_registry import user_registry
 from common import message_types as mt
 from common.app_config import CONFIG
+
+
+logger = logging.getLogger(__name__)
 
 
 UDP_CONFIG = CONFIG["udp"]
@@ -56,7 +60,7 @@ def disconnect_expired_sessions() -> None:
             from transfer.server_handler import file_transfer_server_handler
             file_transfer_server_handler.on_client_disconnect(username)
         except Exception:
-            pass
+            logger.exception("[UDP] Lỗi dọn dẹp phiên truyền file của '%s'.", username)
 
     try:
         from transfer.server_handler import file_transfer_server_handler
@@ -64,7 +68,7 @@ def disconnect_expired_sessions() -> None:
         for sid in pruned:
             print(f"[TRANSFER] Đã dọn dẹp phiên file bị treo do timeout: {sid}")
     except Exception:
-        pass
+        logger.exception("[UDP] Lỗi quét phiên truyền file quá hạn.")
 
 def serve_discovery(stop_event: threading.Event) -> None:
     """Nghe yêu cầu discovery và heartbeat qua UDP."""
@@ -80,64 +84,67 @@ def serve_discovery(stop_event: threading.Event) -> None:
         )
 
         while not stop_event.is_set():
-            # Kiểm tra timeout mỗi vòng, kể cả khi recvfrom hết thời gian chờ.
-            disconnect_expired_sessions()
-
             try:
-                datagram, client_address = udp_socket.recvfrom(
-                    MAX_DATAGRAM_SIZE
-                )
-            except (socket.timeout, ConnectionResetError, OSError):
-                continue
+                # Kiểm tra timeout mỗi vòng, kể cả khi recvfrom hết thời gian chờ.
+                disconnect_expired_sessions()
 
-            try:
-                request = json.loads(datagram.decode("utf-8"))
-            except (UnicodeError, json.JSONDecodeError):
-                continue
-
-            if not isinstance(request, dict):
-                continue
-
-            request_type = request.get("type")
-
-            if request_type == mt.UDP_HEARTBEAT:
-                username = request.get("username")
-                ts = request.get("ts")
-                sig = request.get("sig")
-
-                if (
-                    isinstance(username, str)
-                    and isinstance(ts, int)
-                    and not isinstance(ts, bool)
-                    and isinstance(sig, str)
-                ):
-                    user_registry.refresh_heartbeat_signed(
-                        username,
-                        ts,
-                        sig,
-                        client_address[0],
+                try:
+                    datagram, client_address = udp_socket.recvfrom(
+                        MAX_DATAGRAM_SIZE
                     )
+                except (socket.timeout, ConnectionResetError, OSError):
+                    continue
 
-                # Heartbeat là tín hiệu một chiều, không cần phản hồi UDP.
-                continue
+                try:
+                    request = json.loads(datagram.decode("utf-8"))
+                except (UnicodeError, json.JSONDecodeError):
+                    continue
 
-            if request_type != mt.UDP_DISCOVER:
-                continue
+                if not isinstance(request, dict):
+                    continue
 
-            req_version = request.get("protocol_version")
-            if isinstance(req_version, bool) or req_version != PROTOCOL_VERSION:
-                continue
+                request_type = request.get("type")
 
-            response = {
-                "type": mt.UDP_DISCOVERY_RESPONSE,
-                "protocol_version": PROTOCOL_VERSION,
-                "tcp_port": TCP_SERVER_PORT,
-            }
+                if request_type == mt.UDP_HEARTBEAT:
+                    username = request.get("username")
+                    ts = request.get("ts")
+                    sig = request.get("sig")
 
-            response_bytes = json.dumps(response).encode("utf-8")
+                    if (
+                        isinstance(username, str)
+                        and isinstance(ts, int)
+                        and not isinstance(ts, bool)
+                        and isinstance(sig, str)
+                    ):
+                        user_registry.refresh_heartbeat_signed(
+                            username,
+                            ts,
+                            sig,
+                            client_address[0],
+                        )
 
-            try:
-                udp_socket.sendto(response_bytes, client_address)
-                print(f"[UDP] Đã trả discovery cho {client_address}")
-            except OSError as error:
-                print(f"[UDP] Gửi phản hồi thất bại: {error}")
+                    # Heartbeat là tín hiệu một chiều, không cần phản hồi UDP.
+                    continue
+
+                if request_type != mt.UDP_DISCOVER:
+                    continue
+
+                req_version = request.get("protocol_version")
+                if isinstance(req_version, bool) or req_version != PROTOCOL_VERSION:
+                    continue
+
+                response = {
+                    "type": mt.UDP_DISCOVERY_RESPONSE,
+                    "protocol_version": PROTOCOL_VERSION,
+                    "tcp_port": TCP_SERVER_PORT,
+                }
+
+                response_bytes = json.dumps(response).encode("utf-8")
+
+                try:
+                    udp_socket.sendto(response_bytes, client_address)
+                    print(f"[UDP] Đã trả discovery cho {client_address}")
+                except OSError as error:
+                    print(f"[UDP] Gửi phản hồi thất bại: {error}")
+            except Exception:
+                logger.exception("[UDP] Lỗi không mong muốn khi xử lý gói tin UDP.")

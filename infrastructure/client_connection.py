@@ -362,6 +362,38 @@ class ClientSession:
 
         return self._stop_event.is_set()
 
+    @property
+    def receiver_thread(self) -> threading.Thread | None:
+        """Background TCP receiver thread for this session, if started."""
+
+        return self._receiver_thread
+
+    def get_tls_details(self) -> tuple[int | None, str, str]:
+        """Return resolved (peer_port, tls_version, tls_cipher) for the active socket."""
+
+        peer_port: int | None = None
+        tls_version = "TLS"
+        tls_cipher = ""
+        try:
+            peer_addr = self._connection.getpeername()
+            if isinstance(peer_addr, tuple) and len(peer_addr) >= 2:
+                peer_port = int(peer_addr[1])
+        except Exception:
+            pass
+        try:
+            ver = self._connection.version()
+            if isinstance(ver, str) and ver:
+                tls_version = ver
+        except Exception:
+            pass
+        try:
+            ciph = self._connection.cipher()
+            if isinstance(ciph, tuple) and ciph and isinstance(ciph[0], str):
+                tls_cipher = ciph[0]
+        except Exception:
+            pass
+        return peer_port, tls_version, tls_cipher
+
     def logout(self, timeout: float = 5.0) -> bool:
         """Request QUIT and wait for the server's BYE response."""
 

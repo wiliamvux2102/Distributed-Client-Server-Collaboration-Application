@@ -358,7 +358,98 @@ class InfrastructureRegressionTests(unittest.TestCase):
         self.assertFalse(registry.refresh_heartbeat_signed("alice", True, valid_sig, "127.0.0.1"))  # type: ignore[arg-type]
         self.assertFalse(registry.refresh_heartbeat_signed(123, now_ms, valid_sig, "127.0.0.1"))  # type: ignore[arg-type]
         self.assertFalse(registry.refresh_heartbeat_signed("alice", now_ms, 999, "127.0.0.1"))  # type: ignore[arg-type]
+        self.assertFalse(registry.refresh_heartbeat_signed("alice", now_ms, "chữ_unicode", "127.0.0.1"))
+        self.assertFalse(registry.refresh_heartbeat_signed("alice", now_ms, "é" * 64, "127.0.0.1"))
         self.assertTrue(registry.refresh_heartbeat_signed("alice", now_ms, valid_sig, "127.0.0.1"))
+
+    def test_udp_worker_survives_malformed_unicode_heartbeat(self) -> None:
+        import socket
+        from unittest.mock import patch
+        from infrastructure import udp_service
+
+        registry = UserRegistry()
+        token = "secret-token"
+        registry.register("alice", Mock(), ("127.0.0.1", 50001), threading.Lock(), token)
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            udp_port = probe.getsockname()[1]
+
+        stop_event = threading.Event()
+        with (
+            patch.object(udp_service, "UDP_BIND_HOST", "127.0.0.1"),
+            patch.object(udp_service, "UDP_DISCOVERY_PORT", udp_port),
+            patch.object(udp_service, "UDP_WAIT_INTERVAL", 0.05),
+            patch.object(udp_service, "user_registry", registry),
+        ):
+            worker = threading.Thread(target=udp_service.serve_discovery, args=(stop_event,), daemon=True)
+            worker.start()
+            try:
+                time.sleep(0.08)
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client_sock:
+                    client_sock.settimeout(1.5)
+                    bad_hb = json.dumps({
+                        "type": mt.UDP_HEARTBEAT,
+                        "username": "alice",
+                        "ts": int(time.time() * 1000),
+                        "sig": "chữ_unicode_không_ascii",
+                    }).encode("utf-8")
+                    client_sock.sendto(bad_hb, ("127.0.0.1", udp_port))
+                    time.sleep(0.05)
+
+                    # Discovery must still work because malformed heartbeat did not stop UDP worker.
+                    discover_req = json.dumps({
+                        "type": mt.UDP_DISCOVER,
+                        "protocol_version": udp_service.PROTOCOL_VERSION,
+                    }).encode("utf-8")
+                    client_sock.sendto(discover_req, ("127.0.0.1", udp_port))
+                    resp_bytes, _ = client_sock.recvfrom(2048)
+                    resp = json.loads(resp_bytes.decode("utf-8"))
+                    self.assertEqual(resp["type"], mt.UDP_DISCOVERY_RESPONSE)
+                    self.assertTrue(worker.is_alive())
+            finally:
+                stop_event.set()
+                worker.join(timeout=1.5)
+
+    def test_app_config_strict_validation_and_fallback(self) -> None:
+        import shutil
+        import tempfile
+        from common.app_config import EXAMPLE_CONFIG_FILE, load_config
+
+        tmp_dir = Path(tempfile.mkdtemp())
+        try:
+            # Missing local config.json falls back to config.example.json
+            missing_local = tmp_dir / "missing_config.json"
+            fallback_cfg = load_config(example_file=EXAMPLE_CONFIG_FILE, local_file=missing_local)
+            self.assertEqual(fallback_cfg["server"]["tcp_port"], 5000)
+            self.assertEqual(fallback_cfg["udp"]["port"], 5001)
+
+            # Complete local config.json loads directly
+            full_data = json.loads(EXAMPLE_CONFIG_FILE.read_text(encoding="utf-8"))
+            full_data["server"]["tcp_port"] = 6123
+            full_local = tmp_dir / "config.json"
+            full_local.write_text(json.dumps(full_data), encoding="utf-8")
+            loaded = load_config(example_file=EXAMPLE_CONFIG_FILE, local_file=full_local)
+            self.assertEqual(loaded["server"]["tcp_port"], 6123)
+
+            # Incomplete local config.json must fail with ValueError instead of merging
+            partial_local = tmp_dir / "partial_config.json"
+            partial_local.write_text(
+                json.dumps({"server": {"tcp_port": 6123}}),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                load_config(example_file=EXAMPLE_CONFIG_FILE, local_file=partial_local)
+
+            # Out-of-range port in full config must fail with ValueError
+            bad_port_data = json.loads(EXAMPLE_CONFIG_FILE.read_text(encoding="utf-8"))
+            bad_port_data["server"]["tcp_port"] = 70000
+            bad_port_local = tmp_dir / "bad_config.json"
+            bad_port_local.write_text(json.dumps(bad_port_data), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_config(example_file=EXAMPLE_CONFIG_FILE, local_file=bad_port_local)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def test_client_session_connect_and_logout_guards(self) -> None:
         from infrastructure.client_connection import ClientSession
