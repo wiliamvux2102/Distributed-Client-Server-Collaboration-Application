@@ -10,6 +10,7 @@ from pathlib import Path
 import threading
 import time
 from typing import Any
+import uuid
 
 from PySide6.QtCore import QObject, Signal
 
@@ -78,6 +79,9 @@ class TransferSnapshotEvent:
     total: int
     saved_path: str = ""
     error: str = ""
+    is_broadcast: bool = False
+    batch_id: str = ""
+    batch_total: int = 0
 
 
 class GuiSessionBridge(QObject):
@@ -109,6 +113,8 @@ class SessionController:
         self._chat: ClientChat | None = None
         self._ft_manager: ClientFileTransferManager | None = None
         self._progress_last_emit: dict[str, float] = {}
+        self._broadcast_batches: dict[str, tuple[str, int]] = {}
+        self._batch_tls = threading.local()
         self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="gui-worker")
 
     def _submit_worker(self, fn: Callable[..., Any], *args: Any) -> bool:
@@ -167,6 +173,7 @@ class SessionController:
             self._session_gen += 1
             gen = self._session_gen
             self._progress_last_emit.clear()
+            self._broadcast_batches.clear()
 
         self.bridge.state_changed.emit(ConnectionState.CONNECTING.value)
         if not self._submit_worker(self._connect_worker, gen, clean_user, server_host, server_port):
@@ -245,30 +252,9 @@ class SessionController:
                 self._ft_manager = ft_manager
                 self._state = ConnectionState.CONNECTED
 
-            resolved_port = server_port
-            tls_version = "TLS"
-            tls_cipher = ""
-            conn_sock = getattr(session, "_connection", None)
-            if conn_sock is not None:
-                try:
-                    if resolved_port is None:
-                        peer_addr = conn_sock.getpeername()
-                        if isinstance(peer_addr, tuple) and len(peer_addr) >= 2:
-                            resolved_port = int(peer_addr[1])
-                except Exception:
-                    pass
-                try:
-                    ver = conn_sock.version()
-                    if isinstance(ver, str) and ver:
-                        tls_version = ver
-                except Exception:
-                    pass
-                try:
-                    ciph = conn_sock.cipher()
-                    if isinstance(ciph, tuple) and ciph and isinstance(ciph[0], str):
-                        tls_cipher = ciph[0]
-                except Exception:
-                    pass
+            resolved_port, tls_version, tls_cipher = session.get_tls_details()
+            if server_port is not None:
+                resolved_port = server_port
 
             session.start()
             self.bridge.state_changed.emit(ConnectionState.CONNECTED.value)
@@ -322,13 +308,13 @@ class SessionController:
         # ClientSession._receive_loop calls _on_error right before setting _stop_event and returning.
         # Probe on a worker thread whether the receiver thread actually exited (fatal socket drop)
         # vs. stayed alive (non-fatal handler/dispatch or heartbeat error), without parsing strings.
-        if threading.current_thread() is session._receiver_thread:
+        if threading.current_thread() is session.receiver_thread:
             self._submit_worker(self._probe_receiver_exit, gen, session, message)
         else:
             self.bridge.server_error_received.emit(ErrorEvent(gen=gen, message=message))
 
     def _probe_receiver_exit(self, gen: int, session: ClientSession, message: str) -> None:
-        receiver = session._receiver_thread
+        receiver = session.receiver_thread
         if receiver is not None:
             receiver.join(timeout=0.2)
 
@@ -348,6 +334,7 @@ class SessionController:
             self._session = None
             self._chat = None
             self._progress_last_emit.clear()
+            self._broadcast_batches.clear()
 
         if ft is not None:
             try:
@@ -373,6 +360,7 @@ class SessionController:
             self._chat = None
             self._state = ConnectionState.DISCONNECTED
             self._progress_last_emit.clear()
+            self._broadcast_batches.clear()
         if ft is not None:
             try:
                 ft.cleanup(reason)
@@ -389,33 +377,52 @@ class SessionController:
     def _on_transfer_event(self, gen: int, payload: dict[str, Any]) -> None:
         event_name = str(payload.get("event", ""))
         session_id = str(payload.get("session_id", ""))
+        direction = str(payload.get("direction", "upload"))
         current = self._coerce_int(payload.get("current"), 0)
         total = self._coerce_int(payload.get("total"), 0)
+        is_broadcast = bool(payload.get("is_broadcast", False))
 
-        if event_name == "progress" and session_id:
-            now = time.monotonic()
-            with self._lock:
+        with self._lock:
+            if event_name == "started" and direction == "upload" and session_id:
+                tls_batch_id = getattr(self._batch_tls, "batch_id", "")
+                tls_batch_total = getattr(self._batch_tls, "batch_total", 0)
+                if tls_batch_id:
+                    self._broadcast_batches[session_id] = (tls_batch_id, tls_batch_total)
+
+            batch_id, batch_total = (
+                self._broadcast_batches.get(session_id, ("", 0))
+                if session_id
+                else ("", 0)
+            )
+            if batch_id:
+                is_broadcast = True
+
+            if event_name == "progress" and session_id:
+                now = time.monotonic()
                 last = self._progress_last_emit.get(session_id, 0.0)
                 if current < total and (now - last) < self.PROGRESS_MIN_INTERVAL_SEC:
                     return
                 self._progress_last_emit[session_id] = now
 
-        if event_name in ("completed", "failed") and session_id:
-            with self._lock:
+            if event_name in ("completed", "failed") and session_id:
                 self._progress_last_emit.pop(session_id, None)
+                self._broadcast_batches.pop(session_id, None)
 
         self.bridge.transfer_event_received.emit(
             TransferSnapshotEvent(
                 gen=gen,
                 event=event_name,
                 session_id=session_id,
-                direction=str(payload.get("direction", "upload")),
+                direction=direction,
                 peer=str(payload.get("peer", "")),
                 filename=str(payload.get("filename", "unnamed_file")),
                 current=current,
                 total=total,
                 saved_path=str(payload.get("saved_path", "")),
                 error=str(payload.get("error", "")),
+                is_broadcast=is_broadcast,
+                batch_id=batch_id,
+                batch_total=batch_total,
             )
         )
 
@@ -485,17 +492,42 @@ class SessionController:
                 ErrorEvent(gen=gen, code="FILE_SEND_ERROR", message=f"Không tìm thấy file: {path}")
             )
             return
-        for peer in recipients:
-            try:
-                ft_manager.sender.start_transfer(peer, path)
-            except Exception as error:
-                self.bridge.server_error_received.emit(
-                    ErrorEvent(
-                        gen=gen,
-                        code="FILE_SEND_ERROR",
-                        message=f"Lỗi gửi file tới {peer}: {error}",
+        file_size = path.stat().st_size
+        batch_id = uuid.uuid4().hex
+        batch_total = len(recipients)
+        self._batch_tls.batch_id = batch_id
+        self._batch_tls.batch_total = batch_total
+        try:
+            for idx, peer in enumerate(recipients):
+                try:
+                    ft_manager.sender.start_transfer(peer, path, is_broadcast=True)
+                except Exception as error:
+                    self.bridge.server_error_received.emit(
+                        ErrorEvent(
+                            gen=gen,
+                            code="FILE_SEND_ERROR",
+                            message=f"Lỗi gửi file tới {peer}: {error}",
+                        )
                     )
-                )
+                    self.bridge.transfer_event_received.emit(
+                        TransferSnapshotEvent(
+                            gen=gen,
+                            event="failed",
+                            session_id=f"{batch_id}-err-{idx}",
+                            direction="upload",
+                            peer=peer,
+                            filename=path.name,
+                            current=0,
+                            total=file_size,
+                            error=str(error),
+                            is_broadcast=True,
+                            batch_id=batch_id,
+                            batch_total=batch_total,
+                        )
+                    )
+        finally:
+            self._batch_tls.batch_id = ""
+            self._batch_tls.batch_total = 0
 
     def _send_safe(self, gen: int, session: ClientSession, message: dict[str, Any]) -> None:
         try:
@@ -565,6 +597,7 @@ class SessionController:
                 if gen == self._session_gen:
                     self._state = ConnectionState.DISCONNECTED
                     self._progress_last_emit.clear()
+                    self._broadcast_batches.clear()
             self.bridge.state_changed.emit(ConnectionState.DISCONNECTED.value)
             self.bridge.disconnected.emit(ErrorEvent(gen=gen, message=reason))
 
@@ -580,6 +613,7 @@ class SessionController:
             self._ft_manager = None
             self._state = ConnectionState.DISCONNECTED
             self._progress_last_emit.clear()
+            self._broadcast_batches.clear()
 
         done = threading.Event()
 

@@ -1,4 +1,4 @@
-"""Vector SVG icons (crisp 1.8px outline matching reference mockup) for PySide6."""
+"""Vector SVG icons for the PySide6 desktop interface."""
 
 from __future__ import annotations
 

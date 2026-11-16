@@ -98,6 +98,7 @@ class MessageRecord:
     file_state: str = ""
     saved_path: str = ""
     file_error: str = ""
+    status_note: str = ""
 
 
 @dataclass
@@ -139,6 +140,8 @@ class ChatSessionStore:
         self.online_refreshed_at: str = "Chưa cập nhật"
         self.active_conv_id: str = BROADCAST_CONV_ID
         self.transfers: dict[str, TransferRecord] = {}
+        self._broadcast_batches: dict[str, dict[str, TransferRecord]] = {}
+        self._broadcast_meta: dict[str, tuple[str, int, int]] = {}
 
     def ensure_dm_conversation(self, peer: str) -> ConversationState:
         conv = self.conversations.get(peer)
@@ -200,6 +203,7 @@ class ChatSessionStore:
         conv_id: str,
         username: str,
         rec: TransferRecord,
+        status_note: str = "",
     ) -> tuple[MessageRecord, bool]:
         """Insert or update an inline file transfer bubble in a conversation."""
         is_broadcast = conv_id == BROADCAST_CONV_ID
@@ -221,6 +225,7 @@ class ChatSessionStore:
                     file_state=rec.state,
                     saved_path=rec.saved_path,
                     file_error=rec.error,
+                    status_note=status_note,
                     text=rec.filename,
                 )
                 conv.messages[idx] = updated
@@ -240,9 +245,75 @@ class ChatSessionStore:
             file_state=rec.state,
             saved_path=rec.saved_path,
             file_error=rec.error,
+            status_note=status_note,
         )
         conv.messages.append(created)
+        if not is_outgoing and conv_id != self.active_conv_id:
+            conv.unread_count += 1
         return created, True
+
+    def upsert_broadcast_batch_file(
+        self,
+        username: str,
+        batch_id: str,
+        batch_total: int,
+        rec: TransferRecord,
+    ) -> tuple[MessageRecord, bool]:
+        """Aggregate fan-out broadcast upload sessions into one bubble inside #all."""
+        sessions = self._broadcast_batches.setdefault(batch_id, {})
+        sessions[rec.session_id] = rec
+
+        prev_name, prev_size, prev_target = self._broadcast_meta.get(
+            batch_id, (rec.filename, rec.total_bytes, batch_total)
+        )
+        filename = prev_name or rec.filename
+        per_file_bytes = max(prev_size, rec.total_bytes)
+        target_count = max(prev_target, batch_total, len(sessions))
+        self._broadcast_meta[batch_id] = (filename, per_file_bytes, target_count)
+
+        agg_total = per_file_bytes * target_count
+        agg_current = sum(min(r.current_bytes, per_file_bytes) for r in sessions.values())
+        done_cnt = sum(1 for r in sessions.values() if r.state == "COMPLETED")
+        fail_cnt = sum(1 for r in sessions.values() if r.state == "FAILED")
+        await_cnt = sum(1 for r in sessions.values() if r.state == "AWAITING_VERIFICATION")
+
+        if done_cnt + fail_cnt >= target_count:
+            if fail_cnt == 0:
+                agg_state = "COMPLETED"
+                agg_current = agg_total
+                note = f"{format_bytes(per_file_bytes)}  •  Đã gửi tới {done_cnt}/{target_count} người (SHA-256 OK)"
+            elif done_cnt > 0:
+                agg_state = "FAILED"
+                agg_current = per_file_bytes * done_cnt
+                note = f"Hoàn tất {done_cnt}/{target_count} người ({fail_cnt} thất bại)"
+            else:
+                agg_state = "FAILED"
+                note = f"Thất bại tới {fail_cnt}/{target_count} người"
+        elif done_cnt + await_cnt + fail_cnt >= target_count and await_cnt > 0:
+            agg_state = "AWAITING_VERIFICATION"
+            note = f"Đã gửi tới {target_count} người  •  Đang xác minh SHA-256 ({done_cnt}/{target_count})..."
+        else:
+            agg_state = "TRANSFERRING"
+            note = (
+                f"Đang gửi tới {target_count} người ({done_cnt}/{target_count} xong)"
+                f"  •  {format_bytes(agg_current)} / {format_bytes(agg_total)}"
+            )
+
+        agg_rec = TransferRecord(
+            session_id=f"batch:{batch_id}",
+            direction="upload",
+            peer=BROADCAST_CONV_ID,
+            filename=filename,
+            total_bytes=agg_total,
+            current_bytes=agg_current,
+            state=agg_state,
+        )
+        return self.upsert_file_message(
+            conv_id=BROADCAST_CONV_ID,
+            username=username,
+            rec=agg_rec,
+            status_note=note,
+        )
 
     def apply_transfer_event(
         self,
@@ -345,7 +416,7 @@ class MessageListModel(QAbstractListModel):
 
 
 class MessageBubbleDelegate(QStyledItemDelegate):
-    """Paints reference-matched grouped chat bubbles, pastel avatars, and inline file cards."""
+    """Custom delegate rendering grouped chat bubbles, avatars, and inline file cards."""
 
     open_file_requested = Signal(str)
 
@@ -698,6 +769,8 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         else:
             sub_text = f"Đang nhận  •  {size_str}"
             sub_color = PALETTE["text_muted"]
+        if record.status_note:
+            sub_text = record.status_note
 
         painter.setFont(meta_font)
         painter.setPen(QColor(sub_color))

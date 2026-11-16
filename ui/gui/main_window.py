@@ -1,4 +1,4 @@
-"""Main window, split sign-in view, 4-zone workspace, and smooth zero-lag animations."""
+"""Main window, split sign-in view, 4-zone workspace, and smooth animated transitions."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ from PySide6.QtWidgets import (
 )
 
 from chat.client_chat import MAX_CHAT_MESSAGE_BYTES
-from common.app_config import CONFIG
+from common.app_config import CONFIG, DEFAULT_DOWNLOADS_DIR
 from ui.gui.controller import (
     ChatMessageEvent,
     ConnectionState,
@@ -267,7 +267,7 @@ class AvatarCircle(QWidget):
 
 
 class SidebarItemWidget(QWidget):
-    """Reference-matched sidebar conversation row with pastel avatar, status, and mint badge."""
+    """Sidebar conversation row with avatar, presence indicator, and unread badge."""
 
     def __init__(
         self,
@@ -491,7 +491,7 @@ class TransferItemCard(QFrame):
 
 
 class MainWindow(QMainWindow):
-    """Primary desktop window matching reference Sign-In split and 4-zone Workspace."""
+    """Primary desktop window managing the split sign-in view and 4-zone workspace."""
 
     def __init__(self, controller: SessionController | None = None) -> None:
         super().__init__()
@@ -1399,7 +1399,7 @@ class MainWindow(QMainWindow):
                 )
 
     def _on_open_downloads(self) -> None:
-        dl_dir = Path(CONFIG["paths"]["downloads_dir"]).resolve()
+        dl_dir = DEFAULT_DOWNLOADS_DIR.resolve()
         dl_dir.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(dl_dir)))
 
@@ -1619,19 +1619,42 @@ class MainWindow(QMainWindow):
 
         self.transfer_count_lbl.setText(str(len(self.store.transfers)))
 
-        # Also update inline file bubble in matching peer DM (or active conversation if DM)
-        if rec.peer:
+        # Route broadcast uploads as one aggregated bubble in #all and broadcast downloads into #all;
+        # keep point-to-point transfers inside each peer's DM conversation.
+        conv_id = ""
+        file_msg = None
+        inserted = False
+        if event.is_broadcast and event.batch_id and event.direction == "upload":
+            conv_id = BROADCAST_CONV_ID
+            file_msg, inserted = self.store.upsert_broadcast_batch_file(
+                username=self._current_username,
+                batch_id=event.batch_id,
+                batch_total=event.batch_total,
+                rec=rec,
+            )
+        elif event.is_broadcast:
+            conv_id = BROADCAST_CONV_ID
+            file_msg, inserted = self.store.upsert_file_message(
+                conv_id=BROADCAST_CONV_ID,
+                username=self._current_username,
+                rec=rec,
+            )
+        elif rec.peer:
             conv_id = rec.peer
             file_msg, inserted = self.store.upsert_file_message(
                 conv_id=conv_id,
                 username=self._current_username,
                 rec=rec,
             )
+
+        if file_msg is not None and conv_id:
             if conv_id == self.store.active_conv_id:
                 self.message_model.upsert_file_record(file_msg)
                 self._sync_feed_stack()
                 if inserted:
                     self._scroll_to_bottom(animate=True)
+            elif inserted:
+                self._refresh_sidebar()
 
         if event.event == "completed":
             has_active = any(
