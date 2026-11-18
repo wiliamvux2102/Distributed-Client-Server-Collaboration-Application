@@ -18,7 +18,8 @@ from infrastructure.message_dispatcher import (
 )
 from chat.server_handler import register_chat_handlers
 from transfer.server_handler import register_file_transfer_handlers, file_transfer_server_handler
-from common.app_config import CONFIG
+from common.app_config import CONFIG, resolve_project_path
+from storage import HistoryStore
 
 SERVER_CONFIG = CONFIG["server"]
 PORT = SERVER_CONFIG["tcp_port"]
@@ -67,11 +68,12 @@ def handle_list_online(
     })
 
 
-def create_message_dispatcher() -> MessageDispatcher:
+def create_message_dispatcher(history_store: HistoryStore | None = None) -> MessageDispatcher:
     dispatcher = MessageDispatcher()
     dispatcher.register(mt.ECHO, handle_echo)
     dispatcher.register(mt.LIST_ONLINE, handle_list_online)
-    register_chat_handlers(dispatcher)
+    register_chat_handlers(dispatcher, history_store=history_store)
+    file_transfer_server_handler.set_history_store(history_store)
     register_file_transfer_handlers(dispatcher)
     return dispatcher
 
@@ -303,7 +305,8 @@ def main() -> None:
 
     # Nạp chứng chỉ và tạo context một lần trước khi nhận client.
     server_tls_context = create_server_context()
-    message_dispatcher = create_message_dispatcher()
+    history_store = HistoryStore(resolve_project_path("data/collab_history.db"))
+    message_dispatcher = create_message_dispatcher(history_store=history_store)
     udp_stop_event = threading.Event()
 
     udp_worker = threading.Thread(
@@ -350,6 +353,7 @@ def main() -> None:
     finally:
         udp_stop_event.set()
         udp_worker.join(timeout=1.0)
+        history_store.close()
 
 
 if __name__ == "__main__":

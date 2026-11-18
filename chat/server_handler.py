@@ -7,6 +7,13 @@ from infrastructure.message_dispatcher import ClientContext, MessageDispatcher
 
 
 MAX_CHAT_MESSAGE_BYTES = CONFIG["protocol"]["max_direct_message_bytes"]
+_history_store = None
+
+
+def set_history_store(store) -> None:
+    """Attach an optional HistoryStore for persisting chat messages."""
+    global _history_store
+    _history_store = store
 
 
 def _send_delivery_error(
@@ -94,6 +101,11 @@ def handle_direct_message(
     )
 
     if delivered:
+        if _history_store is not None:
+            try:
+                _history_store.save_direct_message(context.username, recipient, text)
+            except Exception:
+                pass
         context.send({
             "type": mt.DELIVERY_STATUS,
             "ok": True,
@@ -145,6 +157,12 @@ def handle_broadcast_message(
         if context.send_to_user(username, delivery):
             delivered_count += 1
 
+    if _history_store is not None:
+        try:
+            _history_store.save_broadcast_message(context.username, text)
+        except Exception:
+            pass
+
     context.send({
         "type": mt.DELIVERY_STATUS,
         "ok": True,
@@ -155,8 +173,38 @@ def handle_broadcast_message(
     })
 
 
-def register_chat_handlers(dispatcher: MessageDispatcher) -> None:
+def handle_history_request(
+    context: ClientContext,
+    message: dict,
+) -> None:
+    """Return recent persisted chat and transfer history for the authenticated user."""
+    raw_limit = message.get("limit", 100)
+    if isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or raw_limit <= 0:
+        limit = 100
+    else:
+        limit = min(raw_limit, 500)
+
+    messages = []
+    transfers = []
+    if _history_store is not None:
+        try:
+            messages = _history_store.get_user_history(context.username, limit=limit)
+            transfers = _history_store.get_transfer_logs(context.username, limit=30)
+        except Exception:
+            messages = []
+            transfers = []
+
+    context.send({
+        "type": mt.HISTORY_SYNC,
+        "messages": messages,
+        "transfers": transfers,
+    })
+
+
+def register_chat_handlers(dispatcher: MessageDispatcher, history_store=None) -> None:
     """Register chat handlers with the shared server dispatcher."""
+    set_history_store(history_store)
 
     dispatcher.register(mt.DIRECT_MESSAGE, handle_direct_message)
     dispatcher.register(mt.BROADCAST_MESSAGE, handle_broadcast_message)
+    dispatcher.register(mt.HISTORY_REQUEST, handle_history_request)

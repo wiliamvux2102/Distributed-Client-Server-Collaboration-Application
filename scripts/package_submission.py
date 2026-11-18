@@ -30,6 +30,7 @@ INCLUDED_DIRS = (
     "docs",
     "infrastructure",
     "scripts",
+    "storage",
     "tests",
     "transfer",
     "ui",

@@ -82,6 +82,7 @@ def _print_help() -> None:
     print(
         "Lệnh sử dụng:\n"
         "  /online                 Xem danh sách người đang online\n"
+        "  /history                Xem lại lịch sử chat gần đây\n"
         "  /msg <user> <nội dung>  Gửi tin riêng\n"
         "  /all <nội dung>         Gửi chat chung\n"
         "  /sendfile <user> <path> Gửi file tới người dùng khác\n"
@@ -115,6 +116,10 @@ def _process_input(
 
     if line == "/online":
         session.send({"type": mt.LIST_ONLINE})
+        return True
+
+    if line == "/history":
+        chat.request_history(limit=20)
         return True
 
     if line == "/msg" or line.startswith("/msg "):
@@ -237,10 +242,28 @@ def main() -> None:
             )
 
         on_message, on_status = _make_chat_callbacks()
+        def on_history(messages: list[dict], _transfers: list[dict]) -> None:
+            if not messages:
+                return
+            lines = ["--- Lịch sử gần đây ---"]
+            for item in messages:
+                sender = item.get("sender", "?")
+                recipient = item.get("recipient", "")
+                text = item.get("text", "")
+                if item.get("is_broadcast"):
+                    lines.append(f"  [CHUNG {sender}] {text}")
+                elif sender == session.username:
+                    lines.append(f"  [RIÊNG tới {recipient}] {text}")
+                else:
+                    lines.append(f"  [RIÊNG từ {sender}] {text}")
+            lines.append("-----------------------")
+            _print_async("\n".join(lines))
+
         chat = ClientChat(
             send_message=session.send,
             on_message=on_message,
             on_status=on_status,
+            on_history=on_history,
         )
         chat.register_handlers(session.register_handler)
 
@@ -298,6 +321,7 @@ def main() -> None:
             session.start()
             print(f"Đăng nhập thành công với username {session.username}.")
             _print_help()
+            chat.request_history(limit=20)
 
             while not session.is_closed:
                 try:

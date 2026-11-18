@@ -74,6 +74,7 @@ from ui.gui.controller import (
     DeliveryStatusEvent,
     ErrorEvent,
     GuiSessionBridge,
+    HistorySyncEvent,
     OnlineListEvent,
     SessionController,
     TransferSnapshotEvent,
@@ -1248,6 +1249,7 @@ class MainWindow(QMainWindow):
         self.bridge.online_list_received.connect(self._on_online_list)
         self.bridge.message_received.connect(self._on_message_received)
         self.bridge.delivery_status_received.connect(self._on_delivery_status)
+        self.bridge.history_synced.connect(self._on_history_synced)
         self.bridge.transfer_event_received.connect(self._on_transfer_event)
         self.bridge.server_error_received.connect(self._on_server_error)
         self.bridge.disconnected.connect(self._on_disconnected)
@@ -1530,6 +1532,7 @@ class MainWindow(QMainWindow):
         self._refresh_sidebar()
         self._load_active_conversation()
         self.controller.refresh_online_users()
+        self.controller.request_history()
         self._online_poll_timer.start()
 
     def _on_connect_failed(self, event: ErrorEvent) -> None:
@@ -1558,6 +1561,15 @@ class MainWindow(QMainWindow):
         self.online_updated_label.setText(f"Cập nhật lúc {self.store.online_refreshed_at}")
         self._refresh_sidebar()
         self._update_conv_header_meta()
+
+    def _on_history_synced(self, event: HistorySyncEvent) -> None:
+        if event.gen != self._active_gen:
+            return
+        if not event.messages:
+            return
+        self.store.load_history(self._current_username, event.messages)
+        self._refresh_sidebar()
+        self._load_active_conversation()
 
     def _on_message_received(self, event: ChatMessageEvent) -> None:
         if event.gen != self._active_gen:

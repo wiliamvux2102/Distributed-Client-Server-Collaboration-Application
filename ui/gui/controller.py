@@ -68,6 +68,13 @@ class DeliveryStatusEvent:
 
 
 @dataclass(frozen=True)
+class HistorySyncEvent:
+    gen: int
+    messages: tuple[dict[str, Any], ...]
+    transfers: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
 class TransferSnapshotEvent:
     gen: int
     event: str  # started | progress | completed | failed
@@ -93,6 +100,7 @@ class GuiSessionBridge(QObject):
     online_list_received = Signal(object)
     message_received = Signal(object)
     delivery_status_received = Signal(object)
+    history_synced = Signal(object)
     transfer_event_received = Signal(object)
     server_error_received = Signal(object)
     disconnected = Signal(object)
@@ -209,6 +217,13 @@ class SessionController:
                 on_status=lambda ok, msg, code, cnt: self.bridge.delivery_status_received.emit(
                     DeliveryStatusEvent(
                         gen=gen, ok=ok, message=msg, code=code, delivered_count=cnt
+                    )
+                ),
+                on_history=lambda messages, transfers: self.bridge.history_synced.emit(
+                    HistorySyncEvent(
+                        gen=gen,
+                        messages=tuple(messages),
+                        transfers=tuple(transfers),
                     )
                 ),
             )
@@ -433,6 +448,19 @@ class SessionController:
             if self._state != ConnectionState.CONNECTED or session is None:
                 return
         self._submit_worker(self._send_safe, gen, session, {"type": mt.LIST_ONLINE})
+
+    def request_history(self, limit: int = 100) -> None:
+        with self._lock:
+            gen = self._session_gen
+            session = self._session
+            if self._state != ConnectionState.CONNECTED or session is None:
+                return
+        self._submit_worker(
+            self._send_safe,
+            gen,
+            session,
+            {"type": mt.HISTORY_REQUEST, "limit": int(limit)},
+        )
 
     def send_broadcast(self, text: str) -> None:
         with self._lock:

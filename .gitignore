@@ -40,6 +40,7 @@ dist/
 /certs/private/
 
 # Dữ liệu nhận, file tạm và dữ liệu thử nghiệm cục bộ
+/data/
 /downloads/
 /tests/data/local/
 *.tmp

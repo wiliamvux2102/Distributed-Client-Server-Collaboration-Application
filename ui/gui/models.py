@@ -198,6 +198,63 @@ class ChatSessionStore:
         conv.messages.append(record)
         return record
 
+    def load_history(
+        self,
+        current_username: str,
+        messages: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    ) -> None:
+        """Populate historical broadcast/DM messages without incrementing unread counters."""
+        grouped: dict[str, list[MessageRecord]] = {}
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            sender = item.get("sender")
+            recipient = item.get("recipient", "")
+            text = item.get("text")
+            is_broadcast = bool(item.get("is_broadcast", False))
+            if not isinstance(sender, str) or not isinstance(text, str):
+                continue
+
+            created_at = item.get("created_at")
+            try:
+                ts_str = (
+                    datetime.fromtimestamp(float(created_at)).strftime("%H:%M")
+                    if created_at is not None
+                    else "--:--"
+                )
+            except (TypeError, ValueError, OSError):
+                ts_str = "--:--"
+
+            is_outgoing = sender == current_username
+            if is_broadcast:
+                conv_id = BROADCAST_CONV_ID
+            else:
+                peer = recipient if is_outgoing else sender
+                if not isinstance(peer, str) or not peer:
+                    continue
+                conv_id = peer
+
+            grouped.setdefault(conv_id, []).append(
+                MessageRecord(
+                    sender=sender,
+                    text=text,
+                    is_outgoing=is_outgoing,
+                    is_broadcast=is_broadcast,
+                    timestamp_str=ts_str,
+                )
+            )
+
+        for conv_id, hist_records in grouped.items():
+            conv = (
+                self.conversations[BROADCAST_CONV_ID]
+                if conv_id == BROADCAST_CONV_ID
+                else self.ensure_dm_conversation(conv_id)
+            )
+            existing = list(conv.messages)
+            conv.messages.clear()
+            conv.messages.extend(hist_records)
+            conv.messages.extend(existing)
+
     def upsert_file_message(
         self,
         conv_id: str,

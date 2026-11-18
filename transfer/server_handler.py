@@ -45,12 +45,18 @@ class FileTransferServerHandler:
         self,
         send_to_user_fn: SendToUserCallable,
         is_user_online_fn: IsUserOnlineCallable,
+        history_store=None,
     ) -> None:
         self.send_to_user = send_to_user_fn
         self.is_user_online = is_user_online_fn
+        self.history_store = history_store
 
         self._active_sessions: dict[str, ServerTransferSession] = {}
         self._lock = threading.Lock()
+
+    def set_history_store(self, history_store) -> None:
+        """Attach an optional HistoryStore for recording completed/failed transfers."""
+        self.history_store = history_store
 
     def handle_message(
         self,
@@ -260,6 +266,22 @@ class FileTransferServerHandler:
         if error_code is not None:
             self._send_error(from_user, session_id, error_code, error_reason)
             return
+
+        if msg_type == "FILE_RESULT" and session is not None and self.history_store is not None:
+            try:
+                status_str = "COMPLETED" if header.get("status") == "OK" else "FAILED"
+                self.history_store.save_transfer_log(
+                    session_id=session.session_id,
+                    sender=session.sender,
+                    receiver=session.receiver,
+                    filename=session.filename,
+                    filesize=session.filesize,
+                    sha256="",
+                    status=status_str,
+                    is_broadcast=session.is_broadcast,
+                )
+            except Exception:
+                pass
 
         if target_user is not None:
             success = self.send_to_user(target_user, header, payload)

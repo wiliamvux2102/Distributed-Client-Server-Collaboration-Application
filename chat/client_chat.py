@@ -12,6 +12,7 @@ SendMessage = Callable[[dict], None]
 RegisterHandler = Callable[[str, Callable[[dict], None]], None]
 MessageCallback = Callable[[str, str, bool], None]
 StatusCallback = Callable[[bool, str, str | None, int | None], None]
+HistoryCallback = Callable[[list[dict], list[dict]], None]
 
 
 class ClientChat:
@@ -27,10 +28,12 @@ class ClientChat:
         send_message: SendMessage,
         on_message: MessageCallback,
         on_status: StatusCallback,
+        on_history: HistoryCallback | None = None,
     ) -> None:
         self._send_message = send_message
         self._on_message = on_message
         self._on_status = on_status
+        self._on_history = on_history
 
     def send_direct(self, recipient: str, text: str) -> None:
         """Send a private message request through the shared session."""
@@ -54,6 +57,14 @@ class ClientChat:
         self._send_message({
             "type": mt.BROADCAST_MESSAGE,
             "text": self._validate_text(text),
+        })
+
+    def request_history(self, limit: int = 100) -> None:
+        """Request persisted chat and transfer history from the server."""
+
+        self._send_message({
+            "type": mt.HISTORY_REQUEST,
+            "limit": int(limit),
         })
 
     def handle_message(self, message: dict) -> None:
@@ -96,6 +107,16 @@ class ClientChat:
                 )
 
             self._on_status(ok, status_text, code, delivered_count)
+            return
+
+        if message_type == mt.HISTORY_SYNC:
+            if self._on_history is not None:
+                messages = message.get("messages")
+                transfers = message.get("transfers")
+                self._on_history(
+                    messages if isinstance(messages, list) else [],
+                    transfers if isinstance(transfers, list) else [],
+                )
 
     def register_handlers(self, register_handler: RegisterHandler) -> None:
         """Register chat responses with the connection's receive dispatcher."""
@@ -103,6 +124,7 @@ class ClientChat:
         register_handler(mt.DIRECT_DELIVERY, self.handle_message)
         register_handler(mt.BROADCAST_DELIVERY, self.handle_message)
         register_handler(mt.DELIVERY_STATUS, self.handle_message)
+        register_handler(mt.HISTORY_SYNC, self.handle_message)
 
     @staticmethod
     def _validate_text(text: str) -> str:
