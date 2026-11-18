@@ -106,6 +106,7 @@ class ConversationState:
     conv_id: str
     title: str
     is_broadcast: bool
+    is_room: bool = False
     unread_count: int = 0
     messages: deque[MessageRecord] = field(
         default_factory=lambda: deque(maxlen=MAX_MESSAGES_PER_CONV)
@@ -138,6 +139,7 @@ class ChatSessionStore:
         }
         self.online_users: list[str] = []
         self.online_refreshed_at: str = "Chưa cập nhật"
+        self.room_members: dict[str, list[str]] = {}
         self.active_conv_id: str = BROADCAST_CONV_ID
         self.transfers: dict[str, TransferRecord] = {}
         self._broadcast_batches: dict[str, dict[str, TransferRecord]] = {}
@@ -154,13 +156,42 @@ class ChatSessionStore:
             self.conversations[peer] = conv
         return conv
 
+    def ensure_room_conversation(self, room_id: str) -> ConversationState:
+        conv = self.conversations.get(room_id)
+        if conv is None:
+            conv = ConversationState(
+                conv_id=room_id,
+                title=room_id,
+                is_broadcast=False,
+                is_room=True,
+            )
+            self.conversations[room_id] = conv
+        return conv
+
     def set_active_conversation(self, conv_id: str) -> ConversationState:
         if conv_id != BROADCAST_CONV_ID and conv_id not in self.conversations:
-            self.ensure_dm_conversation(conv_id)
+            if conv_id.startswith("#"):
+                self.ensure_room_conversation(conv_id)
+            else:
+                self.ensure_dm_conversation(conv_id)
         self.active_conv_id = conv_id
         conv = self.conversations[conv_id]
         conv.unread_count = 0
         return conv
+
+    def append_room_incoming(self, room_id: str, sender: str, text: str) -> tuple[str, MessageRecord]:
+        conv = self.ensure_room_conversation(room_id)
+        record = MessageRecord(
+            sender=sender,
+            text=text,
+            is_outgoing=False,
+            is_broadcast=False,
+            timestamp_str=datetime.now().strftime("%H:%M"),
+        )
+        conv.messages.append(record)
+        if room_id != self.active_conv_id:
+            conv.unread_count += 1
+        return room_id, record
 
     def append_incoming(self, sender: str, text: str, is_broadcast: bool) -> tuple[str, MessageRecord]:
         conv_id = BROADCAST_CONV_ID if is_broadcast else sender
@@ -226,8 +257,14 @@ class ChatSessionStore:
                 ts_str = "--:--"
 
             is_outgoing = sender == current_username
+            conv_type = item.get("conv_type")
             if is_broadcast:
                 conv_id = BROADCAST_CONV_ID
+            elif conv_type == "room":
+                raw_cid = item.get("conv_id")
+                if not isinstance(raw_cid, str) or not raw_cid:
+                    continue
+                conv_id = raw_cid
             else:
                 peer = recipient if is_outgoing else sender
                 if not isinstance(peer, str) or not peer:
@@ -245,11 +282,12 @@ class ChatSessionStore:
             )
 
         for conv_id, hist_records in grouped.items():
-            conv = (
-                self.conversations[BROADCAST_CONV_ID]
-                if conv_id == BROADCAST_CONV_ID
-                else self.ensure_dm_conversation(conv_id)
-            )
+            if conv_id == BROADCAST_CONV_ID:
+                conv = self.conversations[BROADCAST_CONV_ID]
+            elif conv_id.startswith("#"):
+                conv = self.ensure_room_conversation(conv_id)
+            else:
+                conv = self.ensure_dm_conversation(conv_id)
             existing = list(conv.messages)
             conv.messages.clear()
             conv.messages.extend(hist_records)

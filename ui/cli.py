@@ -83,6 +83,7 @@ def _print_help() -> None:
         "Lệnh sử dụng:\n"
         "  /online                 Xem danh sách người đang online\n"
         "  /history                Xem lại lịch sử chat gần đây\n"
+        "  /room <create|join|leave|list|msg> ...  Quản lý và chat phòng\n"
         "  /msg <user> <nội dung>  Gửi tin riêng\n"
         "  /all <nội dung>         Gửi chat chung\n"
         "  /sendfile <user> <path> Gửi file tới người dùng khác\n"
@@ -120,6 +121,26 @@ def _process_input(
 
     if line == "/history":
         chat.request_history(limit=20)
+        return True
+
+    if line.startswith("/room"):
+        parts = line.split(" ", 3)
+        sub = parts[1].lower() if len(parts) > 1 else ""
+        if sub == "list" and len(parts) == 2:
+            chat.list_rooms()
+        elif sub == "create" and len(parts) >= 3:
+            chat.create_room(parts[2])
+        elif sub == "join" and len(parts) >= 3:
+            chat.join_room(parts[2])
+        elif sub == "leave" and len(parts) >= 3:
+            chat.leave_room(parts[2])
+        elif sub == "msg" and len(parts) == 4 and parts[3]:
+            with _OUTPUT_LOCK:
+                chat.send_room(parts[2], parts[3])
+                rid = parts[2] if parts[2].startswith("#") else f"#{parts[2]}"
+                print(f"[PHÒNG {rid.lower()} bạn] {parts[3]}")
+        else:
+            print("Cú pháp: /room <list | create <tên> | join <tên> | leave <tên> | msg <tên> <nội dung>>")
         return True
 
     if line == "/msg" or line.startswith("/msg "):
@@ -264,6 +285,19 @@ def main() -> None:
             on_message=on_message,
             on_status=on_status,
             on_history=on_history,
+            on_room_message=lambda rid, s, txt: _print_async(f"[PHÒNG {rid} {s}] {txt}"),
+            on_room_list=lambda rooms: _print_async(
+                "[ROOMS] " + (
+                    ", ".join(f"{r['room_id']}({len(r.get('members', []))})" for r in rooms)
+                    if rooms
+                    else "(chưa có phòng nào)"
+                )
+            ),
+            on_room_status=lambda ok, _act, _rid, msg, members: _print_async(
+                f"[ROOM] {msg} ({len(members)} thành viên: {', '.join(members)})"
+                if ok and members
+                else (f"[ROOM] {msg}" if ok else f"[LỖI ROOM] {msg}")
+            ),
         )
         chat.register_handlers(session.register_handler)
 

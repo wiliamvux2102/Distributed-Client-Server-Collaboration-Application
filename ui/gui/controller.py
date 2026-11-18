@@ -75,6 +75,30 @@ class HistorySyncEvent:
 
 
 @dataclass(frozen=True)
+class RoomMessageEvent:
+    gen: int
+    room_id: str
+    sender: str
+    text: str
+
+
+@dataclass(frozen=True)
+class RoomListEvent:
+    gen: int
+    rooms: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class RoomStatusEvent:
+    gen: int
+    ok: bool
+    action: str
+    room_id: str
+    message: str
+    members: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class TransferSnapshotEvent:
     gen: int
     event: str  # started | progress | completed | failed
@@ -101,6 +125,9 @@ class GuiSessionBridge(QObject):
     message_received = Signal(object)
     delivery_status_received = Signal(object)
     history_synced = Signal(object)
+    room_message_received = Signal(object)
+    room_list_received = Signal(object)
+    room_status_received = Signal(object)
     transfer_event_received = Signal(object)
     server_error_received = Signal(object)
     disconnected = Signal(object)
@@ -224,6 +251,22 @@ class SessionController:
                         gen=gen,
                         messages=tuple(messages),
                         transfers=tuple(transfers),
+                    )
+                ),
+                on_room_message=lambda room_id, sender, text: self.bridge.room_message_received.emit(
+                    RoomMessageEvent(gen=gen, room_id=room_id, sender=sender, text=text)
+                ),
+                on_room_list=lambda rooms: self.bridge.room_list_received.emit(
+                    RoomListEvent(gen=gen, rooms=tuple(rooms))
+                ),
+                on_room_status=lambda ok, action, room_id, msg, members: self.bridge.room_status_received.emit(
+                    RoomStatusEvent(
+                        gen=gen,
+                        ok=ok,
+                        action=action,
+                        room_id=room_id,
+                        message=msg,
+                        members=tuple(members),
                     )
                 ),
             )
@@ -477,6 +520,46 @@ class SessionController:
             if self._state != ConnectionState.CONNECTED or chat is None:
                 return
         self._submit_worker(self._send_chat_safe, gen, chat.send_direct, recipient, text)
+
+    def create_room(self, room_id: str) -> None:
+        with self._lock:
+            gen = self._session_gen
+            chat = self._chat
+            if self._state != ConnectionState.CONNECTED or chat is None:
+                return
+        self._submit_worker(self._send_chat_safe, gen, chat.create_room, room_id)
+
+    def join_room(self, room_id: str) -> None:
+        with self._lock:
+            gen = self._session_gen
+            chat = self._chat
+            if self._state != ConnectionState.CONNECTED or chat is None:
+                return
+        self._submit_worker(self._send_chat_safe, gen, chat.join_room, room_id)
+
+    def leave_room(self, room_id: str) -> None:
+        with self._lock:
+            gen = self._session_gen
+            chat = self._chat
+            if self._state != ConnectionState.CONNECTED or chat is None:
+                return
+        self._submit_worker(self._send_chat_safe, gen, chat.leave_room, room_id)
+
+    def refresh_rooms(self) -> None:
+        with self._lock:
+            gen = self._session_gen
+            chat = self._chat
+            if self._state != ConnectionState.CONNECTED or chat is None:
+                return
+        self._submit_worker(self._send_chat_safe, gen, chat.list_rooms)
+
+    def send_room(self, room_id: str, text: str) -> None:
+        with self._lock:
+            gen = self._session_gen
+            chat = self._chat
+            if self._state != ConnectionState.CONNECTED or chat is None:
+                return
+        self._submit_worker(self._send_chat_safe, gen, chat.send_room, room_id, text)
 
     def send_file(self, recipient: str, file_path: str | Path) -> None:
         with self._lock:

@@ -13,6 +13,9 @@ RegisterHandler = Callable[[str, Callable[[dict], None]], None]
 MessageCallback = Callable[[str, str, bool], None]
 StatusCallback = Callable[[bool, str, str | None, int | None], None]
 HistoryCallback = Callable[[list[dict], list[dict]], None]
+RoomMessageCallback = Callable[[str, str, str], None]
+RoomListCallback = Callable[[list[dict]], None]
+RoomStatusCallback = Callable[[bool, str, str, str, list[str]], None]
 
 
 class ClientChat:
@@ -29,11 +32,17 @@ class ClientChat:
         on_message: MessageCallback,
         on_status: StatusCallback,
         on_history: HistoryCallback | None = None,
+        on_room_message: RoomMessageCallback | None = None,
+        on_room_list: RoomListCallback | None = None,
+        on_room_status: RoomStatusCallback | None = None,
     ) -> None:
         self._send_message = send_message
         self._on_message = on_message
         self._on_status = on_status
         self._on_history = on_history
+        self._on_room_message = on_room_message
+        self._on_room_list = on_room_list
+        self._on_room_status = on_room_status
 
     def send_direct(self, recipient: str, text: str) -> None:
         """Send a private message request through the shared session."""
@@ -65,6 +74,30 @@ class ClientChat:
         self._send_message({
             "type": mt.HISTORY_REQUEST,
             "limit": int(limit),
+        })
+
+    def create_room(self, room_id: str) -> None:
+        """Request creation/joining of a named chat room."""
+        self._send_message({"type": mt.ROOM_CREATE, "room_id": room_id})
+
+    def join_room(self, room_id: str) -> None:
+        """Join an existing chat room."""
+        self._send_message({"type": mt.ROOM_JOIN, "room_id": room_id})
+
+    def leave_room(self, room_id: str) -> None:
+        """Leave a chat room."""
+        self._send_message({"type": mt.ROOM_LEAVE, "room_id": room_id})
+
+    def list_rooms(self) -> None:
+        """Request the list of rooms from the server."""
+        self._send_message({"type": mt.ROOM_LIST})
+
+    def send_room(self, room_id: str, text: str) -> None:
+        """Send a message to a joined chat room."""
+        self._send_message({
+            "type": mt.ROOM_MESSAGE,
+            "room_id": room_id,
+            "text": self._validate_text(text),
         })
 
     def handle_message(self, message: dict) -> None:
@@ -117,6 +150,32 @@ class ClientChat:
                     messages if isinstance(messages, list) else [],
                     transfers if isinstance(transfers, list) else [],
                 )
+            return
+
+        if message_type == mt.ROOM_DELIVERY:
+            if self._on_room_message is not None:
+                room_id = message.get("room_id")
+                sender = message.get("sender")
+                text = message.get("text")
+                if isinstance(room_id, str) and isinstance(sender, str) and isinstance(text, str):
+                    self._on_room_message(room_id, sender, text)
+            return
+
+        if message_type == mt.ROOM_LIST_RESULT:
+            if self._on_room_list is not None:
+                rooms = message.get("rooms")
+                self._on_room_list(rooms if isinstance(rooms, list) else [])
+            return
+
+        if message_type == mt.ROOM_STATUS:
+            if self._on_room_status is not None:
+                self._on_room_status(
+                    bool(message.get("ok", False)),
+                    str(message.get("action", "")),
+                    str(message.get("room_id", "")),
+                    str(message.get("message", "")),
+                    list(message.get("members") or []),
+                )
 
     def register_handlers(self, register_handler: RegisterHandler) -> None:
         """Register chat responses with the connection's receive dispatcher."""
@@ -125,6 +184,9 @@ class ClientChat:
         register_handler(mt.BROADCAST_DELIVERY, self.handle_message)
         register_handler(mt.DELIVERY_STATUS, self.handle_message)
         register_handler(mt.HISTORY_SYNC, self.handle_message)
+        register_handler(mt.ROOM_DELIVERY, self.handle_message)
+        register_handler(mt.ROOM_LIST_RESULT, self.handle_message)
+        register_handler(mt.ROOM_STATUS, self.handle_message)
 
     @staticmethod
     def _validate_text(text: str) -> str:

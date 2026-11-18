@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListView,
@@ -76,6 +77,9 @@ from ui.gui.controller import (
     GuiSessionBridge,
     HistorySyncEvent,
     OnlineListEvent,
+    RoomListEvent,
+    RoomMessageEvent,
+    RoomStatusEvent,
     SessionController,
     TransferSnapshotEvent,
 )
@@ -521,7 +525,7 @@ class MainWindow(QMainWindow):
 
         self._online_poll_timer = QTimer(self)
         self._online_poll_timer.setInterval(5000)
-        self._online_poll_timer.timeout.connect(self.controller.refresh_online_users)
+        self._online_poll_timer.timeout.connect(self._poll_workspace_state)
 
         self.setStyleSheet(build_stylesheet(self._theme_mode))
         self._build_ui()
@@ -866,10 +870,20 @@ class MainWindow(QMainWindow):
         sb_wrap.addWidget(self.search_box)
         side_layout.addLayout(sb_wrap)
 
+        ch_row = QHBoxLayout()
+        ch_row.setContentsMargins(20, 10, 14, 6)
         ch_sec = QLabel("KÊNH CHAT")
         ch_sec.setObjectName("SectionHeader")
-        ch_sec.setContentsMargins(20, 10, 20, 6)
-        side_layout.addWidget(ch_sec)
+        self.add_room_btn = QPushButton("+ Phòng")
+        self.add_room_btn.setObjectName("GhostButton")
+        self.add_room_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_room_btn.setMinimumHeight(26)
+        self.add_room_btn.setStyleSheet("padding: 2px 10px; font-size: 8.5pt;")
+        self.add_room_btn.setToolTip("Tạo hoặc tham gia phòng chat theo tên")
+        ch_row.addWidget(ch_sec)
+        ch_row.addStretch()
+        ch_row.addWidget(self.add_room_btn)
+        side_layout.addLayout(ch_row)
 
         self.channel_list = QListWidget()
         self.channel_list.setObjectName("SidebarList")
@@ -1228,6 +1242,7 @@ class MainWindow(QMainWindow):
         self.disconnect_button.clicked.connect(lambda: self.controller.disconnect())
         self.refresh_button.clicked.connect(self.controller.refresh_online_users)
         self.peer_search_input.textChanged.connect(lambda _txt: self._refresh_sidebar())
+        self.add_room_btn.clicked.connect(self._on_add_room_clicked)
         self.channel_list.itemClicked.connect(self._on_channel_clicked)
         self.peer_list.itemClicked.connect(self._on_peer_clicked)
 
@@ -1250,6 +1265,9 @@ class MainWindow(QMainWindow):
         self.bridge.message_received.connect(self._on_message_received)
         self.bridge.delivery_status_received.connect(self._on_delivery_status)
         self.bridge.history_synced.connect(self._on_history_synced)
+        self.bridge.room_message_received.connect(self._on_room_message_received)
+        self.bridge.room_list_received.connect(self._on_room_list_received)
+        self.bridge.room_status_received.connect(self._on_room_status_received)
         self.bridge.transfer_event_received.connect(self._on_transfer_event)
         self.bridge.server_error_received.connect(self._on_server_error)
         self.bridge.disconnected.connect(self._on_disconnected)
@@ -1532,6 +1550,7 @@ class MainWindow(QMainWindow):
         self._refresh_sidebar()
         self._load_active_conversation()
         self.controller.refresh_online_users()
+        self.controller.refresh_rooms()
         self.controller.request_history()
         self._online_poll_timer.start()
 
@@ -1570,6 +1589,73 @@ class MainWindow(QMainWindow):
         self.store.load_history(self._current_username, event.messages)
         self._refresh_sidebar()
         self._load_active_conversation()
+
+    def _poll_workspace_state(self) -> None:
+        self.controller.refresh_online_users()
+        self.controller.refresh_rooms()
+
+    def _on_add_room_clicked(self) -> None:
+        if self.controller.state != ConnectionState.CONNECTED:
+            self._show_error_banner("Chưa kết nối tới server.")
+            return
+        name, ok = QInputDialog.getText(
+            self,
+            "Tạo / Tham gia phòng chat",
+            "Nhập tên phòng (2–24 ký tự ASCII, vd: nhom1):",
+        )
+        if ok and name.strip():
+            self.controller.join_room(name.strip())
+
+    def _on_room_list_received(self, event: RoomListEvent) -> None:
+        if event.gen != self._active_gen:
+            return
+        for r in event.rooms:
+            if not isinstance(r, dict):
+                continue
+            rid = r.get("room_id")
+            if not isinstance(rid, str) or not rid:
+                continue
+            members = [str(m) for m in (r.get("members") or [])]
+            self.store.room_members[rid] = members
+            if r.get("joined"):
+                self.store.ensure_room_conversation(rid)
+        self._refresh_sidebar()
+        self._update_conv_header_meta()
+
+    def _on_room_status_received(self, event: RoomStatusEvent) -> None:
+        if event.gen != self._active_gen:
+            return
+        if not event.ok:
+            self._show_error_banner(event.message)
+            return
+        if event.action in ("create", "join") and event.room_id:
+            self.store.room_members[event.room_id] = list(event.members)
+            self.store.set_active_conversation(event.room_id)
+            self._refresh_sidebar()
+            self._load_active_conversation()
+            self._set_transient_status(event.message)
+        elif event.action == "leave" and event.room_id:
+            self.store.room_members[event.room_id] = list(event.members)
+            self.store.conversations.pop(event.room_id, None)
+            if self.store.active_conv_id == event.room_id:
+                self.store.set_active_conversation(BROADCAST_CONV_ID)
+            self._refresh_sidebar()
+            self._load_active_conversation()
+            self._set_transient_status(event.message)
+
+    def _on_room_message_received(self, event: RoomMessageEvent) -> None:
+        if event.gen != self._active_gen:
+            return
+        conv_id, record = self.store.append_room_incoming(
+            room_id=event.room_id,
+            sender=event.sender,
+            text=event.text,
+        )
+        if conv_id == self.store.active_conv_id:
+            self.message_model.append_message(record)
+            self._sync_feed_stack()
+            self._scroll_to_bottom(animate=True)
+        self._refresh_sidebar()
 
     def _on_message_received(self, event: ChatMessageEvent) -> None:
         if event.gen != self._active_gen:
@@ -1757,12 +1843,40 @@ class MainWindow(QMainWindow):
         self.channel_list.setItemWidget(bc_item, bc_widget)
         if self.store.active_conv_id == BROADCAST_CONV_ID:
             self.channel_list.setCurrentItem(bc_item)
+
+        room_ids = sorted(
+            cid for cid, c in self.store.conversations.items()
+            if cid != BROADCAST_CONV_ID and (c.is_room or cid.startswith("#"))
+        )
+        for rid in room_ids:
+            rconv = self.store.conversations[rid]
+            ritem = QListWidgetItem()
+            ritem.setData(Qt.ItemDataRole.UserRole, rid)
+            ritem.setSizeHint(QSize(0, 52))
+            mcount = len(self.store.room_members.get(rid, []))
+            sub = f"Phòng chat • {mcount} thành viên" if mcount else "Phòng chat nhóm"
+            rwidget = SidebarItemWidget(
+                title=rid,
+                subtitle=sub,
+                avatar_text="#",
+                avatar_bg=PALETTE["brand_soft"],
+                avatar_fg=PALETTE["brand_soft_text"],
+                status=None,
+                unread_count=rconv.unread_count,
+                is_channel=True,
+            )
+            self.channel_list.addItem(ritem)
+            self.channel_list.setItemWidget(ritem, rwidget)
+            if self.store.active_conv_id == rid:
+                self.channel_list.setCurrentItem(ritem)
+
+        self.channel_list.setFixedHeight(min(180, max(60, (1 + len(room_ids)) * 54)))
         self.channel_list.blockSignals(False)
 
         query = self.peer_search_input.text().strip().lower()
         ordered_peers: list[str] = list(self.store.online_users)
         for cid in self.store.conversations:
-            if cid != BROADCAST_CONV_ID and cid not in ordered_peers:
+            if cid != BROADCAST_CONV_ID and not cid.startswith("#") and cid not in ordered_peers:
                 ordered_peers.append(cid)
 
         self.peer_list.blockSignals(True)
@@ -1815,6 +1929,14 @@ class MainWindow(QMainWindow):
                 f"{count} người khác online  •  Kênh chung"
             )
             self.composer.setPlaceholderText("Nhắn tin tới mọi người trong Global chat...")
+        elif cid.startswith("#"):
+            members = self.store.room_members.get(cid, [])
+            online_members = [m for m in members if m != self._current_username and m in self.store.online_users]
+            self.conv_title_label.setText(f"Phòng {cid}")
+            self.global_status_label.setText(
+                f"{len(members)} thành viên ({len(online_members)} online)  •  Phòng chat"
+            )
+            self.composer.setPlaceholderText(f"Nhắn tin vào phòng {cid}...")
         else:
             is_online = cid in self.store.online_users
             self.conv_title_label.setText(f"@{cid}")
@@ -1894,6 +2016,8 @@ class MainWindow(QMainWindow):
         cid = self.store.active_conv_id
         if cid == BROADCAST_CONV_ID:
             self.controller.send_broadcast(raw_text)
+        elif cid.startswith("#"):
+            self.controller.send_room(cid, raw_text)
         else:
             self.controller.send_direct(cid, raw_text)
 
@@ -1921,6 +2045,17 @@ class MainWindow(QMainWindow):
             self.global_status_label.setText(
                 f"Đang gửi '{local_path.name}' tới {len(peers)} người online..."
             )
+            return
+
+        if cid.startswith("#"):
+            members = self.store.room_members.get(cid, [])
+            peers = [m for m in members if m != self._current_username and m in self.store.online_users]
+            if not peers:
+                self._show_error_banner(f"Không có thành viên nào khác trong phòng {cid} đang online.")
+                return
+            for peer in peers:
+                self.controller.send_file(peer, local_path)
+            self._set_transient_status(f"Đang gửi '{local_path.name}' tới {len(peers)} thành viên {cid}...")
             return
 
         self.controller.send_file(cid, local_path)

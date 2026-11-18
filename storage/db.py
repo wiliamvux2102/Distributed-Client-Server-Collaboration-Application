@@ -64,6 +64,25 @@ class HistoryStore:
                 )
                 """
             )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS rooms (
+                    room_id TEXT PRIMARY KEY,
+                    created_by TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS room_members (
+                    room_id TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    joined_at REAL NOT NULL,
+                    PRIMARY KEY (room_id, username)
+                )
+                """
+            )
             self._conn.commit()
 
     def save_broadcast_message(
@@ -106,8 +125,63 @@ class HistoryStore:
             self._conn.commit()
             return int(cur.lastrowid)
 
+    def save_room_message(
+        self,
+        room_id: str,
+        sender: str,
+        text: str,
+        created_at: float | None = None,
+    ) -> int:
+        """Persist a room message and return its row ID."""
+        ts = time.time() if created_at is None else float(created_at)
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO messages (conv_type, conv_id, sender, recipient, text, created_at)
+                VALUES ('room', ?, ?, '', ?, ?)
+                """,
+                (room_id, sender, text, ts),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid)
+
+    def create_or_join_room(self, room_id: str, username: str) -> None:
+        """Ensure room exists and add username as a member."""
+        now = time.time()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO rooms (room_id, created_by, created_at) VALUES (?, ?, ?)",
+                (room_id, username, now),
+            )
+            self._conn.execute(
+                "INSERT OR IGNORE INTO room_members (room_id, username, joined_at) VALUES (?, ?, ?)",
+                (room_id, username, now),
+            )
+            self._conn.commit()
+
+    def leave_room(self, room_id: str, username: str) -> None:
+        """Remove username from a room."""
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM room_members WHERE room_id = ? AND username = ?",
+                (room_id, username),
+            )
+            self._conn.commit()
+
+    def load_all_rooms(self) -> dict[str, list[str]]:
+        """Load all persisted rooms and their member lists."""
+        with self._lock:
+            room_rows = self._conn.execute("SELECT room_id FROM rooms ORDER BY created_at ASC").fetchall()
+            member_rows = self._conn.execute(
+                "SELECT room_id, username FROM room_members ORDER BY joined_at ASC"
+            ).fetchall()
+        rooms: dict[str, list[str]] = {row["room_id"]: [] for row in room_rows}
+        for row in member_rows:
+            rooms.setdefault(row["room_id"], []).append(row["username"])
+        return rooms
+
     def get_user_history(self, username: str, limit: int = 100) -> list[dict[str, Any]]:
-        """Return recent broadcast and DM messages visible to ``username`` in chronological order."""
+        """Return recent broadcast, DM, and joined-room messages visible to ``username``."""
         bounded_limit = max(1, min(int(limit), 500))
         with self._lock:
             rows = self._conn.execute(
@@ -116,10 +190,13 @@ class HistoryStore:
                 FROM messages
                 WHERE conv_type = 'broadcast'
                    OR (conv_type = 'direct' AND (sender = ? OR recipient = ?))
+                   OR (conv_type = 'room' AND conv_id IN (
+                       SELECT room_id FROM room_members WHERE username = ?
+                   ))
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (username, username, bounded_limit),
+                (username, username, username, bounded_limit),
             ).fetchall()
 
         result: list[dict[str, Any]] = []
