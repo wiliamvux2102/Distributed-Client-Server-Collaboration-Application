@@ -59,6 +59,7 @@ class TestTransferEndToEnd(unittest.TestCase):
             download_dir=self.download_dir,
             on_complete=lambda sid, fn, path: self.completed.append(("receiver", fn, path)),
             on_error=lambda sid, fn, err: self.errors.append(("receiver", err)),
+            enable_p2p=False,
         )
 
         self.clients["alice"] = self.sender

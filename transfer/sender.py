@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass, field
 from pathlib import Path
+import socket
 import threading
 import time
 import uuid
@@ -18,6 +19,14 @@ from transfer.integrity import (
     is_valid_transfer_id,
     parse_non_negative_int,
     sanitize_filename,
+)
+from transfer.p2p import (
+    P2P_MAGIC_CHUNK,
+    P2P_MAGIC_END,
+    make_p2p_cipher,
+    recv_p2p_json,
+    send_p2p_binary_frame,
+    send_p2p_json,
 )
 from transfer.receiver import FileReceiver
 
@@ -43,6 +52,9 @@ class UploadSession:
     sent_bytes: int = 0
     started: bool = False
     is_broadcast: bool = False
+    p2p_hosts: Any = None
+    p2p_port: Any = None
+    p2p_token: Any = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
@@ -132,9 +144,16 @@ class FileSender:
                 session = self._sessions.get(session_id)
                 if session and not session.started:
                     session.started = True
+                    session.p2p_hosts = header.get("p2p_hosts")
+                    session.p2p_port = header.get("p2p_port")
+                    session.p2p_token = header.get("p2p_token")
                     should_start = True
             if should_start and session is not None:
-                threading.Thread(target=self._send_chunks_worker, args=(session,), daemon=True).start()
+                threading.Thread(
+                    target=self._send_chunks_worker,
+                    args=(session,),
+                    daemon=True,
+                ).start()
 
         elif msg_type == "FILE_RESULT":
             with self._lock:
@@ -158,10 +177,62 @@ class FileSender:
                 if self.on_error:
                     self.on_error(session.session_id, session.filename, reason)
 
+    @staticmethod
+    def _try_connect_p2p(
+        session: UploadSession,
+        p2p_hosts: Any,
+        p2p_port: Any,
+        p2p_token: Any,
+    ) -> socket.socket | None:
+        """Attempt direct TCP P2P connection and token handshake; return None to fall back to relay."""
+        if (
+            not isinstance(p2p_hosts, list)
+            or not isinstance(p2p_port, int)
+            or isinstance(p2p_port, bool)
+            or not (1 <= p2p_port <= 65535)
+            or not isinstance(p2p_token, str)
+            or not p2p_token
+        ):
+            return None
+
+        for host in p2p_hosts:
+            if not isinstance(host, str) or not host or session.cancel_event.is_set():
+                continue
+            sock: socket.socket | None = None
+            try:
+                sock = socket.create_connection((host, p2p_port), timeout=1.5)
+                sock.settimeout(10.0)
+                send_p2p_json(
+                    sock,
+                    {"session_id": session.session_id, "p2p_token": p2p_token},
+                )
+                ack = recv_p2p_json(sock)
+                if ack.get("ok") is True:
+                    return sock
+            except Exception:
+                pass
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        return None
+
     def _send_chunks_worker(self, session: UploadSession) -> None:
-        """Background thread worker to stream file chunks sequentially."""
+        """Background thread worker to stream file chunks directly via P2P or via server relay."""
+        p2p_sock: socket.socket | None = None
+        p2p_cipher = None
         try:
             if session.filesize > 0:
+                p2p_sock = self._try_connect_p2p(
+                    session,
+                    session.p2p_hosts,
+                    session.p2p_port,
+                    session.p2p_token,
+                )
+                if p2p_sock is not None:
+                    p2p_cipher = make_p2p_cipher(str(session.p2p_token))
+
                 with session.file_path.open("rb") as file_handle:
                     for chunk_index in range(session.total_chunks):
                         if session.cancel_event.is_set():
@@ -171,12 +242,41 @@ class FileSender:
                         if not chunk_data:
                             break
 
-                        header = {
-                            "type": "FILE_CHUNK",
-                            "session_id": session.session_id,
-                            "chunk_index": chunk_index,
-                        }
-                        self.send_frame(header, chunk_data)
+                        if p2p_sock is not None:
+                            try:
+                                send_p2p_binary_frame(
+                                    p2p_sock,
+                                    P2P_MAGIC_CHUNK,
+                                    chunk_index,
+                                    chunk_data,
+                                    cipher=p2p_cipher,
+                                )
+                            except Exception:
+                                # Fall back to server relay only if nothing was sent over P2P yet
+                                if chunk_index == 0:
+                                    try:
+                                        p2p_sock.close()
+                                    except OSError:
+                                        pass
+                                    p2p_sock = None
+                                    self.send_frame(
+                                        {
+                                            "type": "FILE_CHUNK",
+                                            "session_id": session.session_id,
+                                            "chunk_index": chunk_index,
+                                        },
+                                        chunk_data,
+                                    )
+                                else:
+                                    raise
+                        else:
+                            header = {
+                                "type": "FILE_CHUNK",
+                                "session_id": session.session_id,
+                                "chunk_index": chunk_index,
+                            }
+                            self.send_frame(header, chunk_data)
+
                         session.sent_bytes += len(chunk_data)
 
                         if self.on_progress:
@@ -187,18 +287,22 @@ class FileSender:
                                 session.filesize,
                             )
 
-                        # Yield GIL briefly so UI/receiver threads can render real-time progress
-                        time.sleep(0.001)
+                        if p2p_sock is None:
+                            # Yield GIL briefly so UI/receiver threads can render real-time progress
+                            time.sleep(0.001)
 
             # Signal completion after all chunks have been streamed
             if not session.cancel_event.is_set():
-                self.send_frame(
-                    {
-                        "type": "FILE_END",
-                        "session_id": session.session_id,
-                    },
-                    b"",
-                )
+                if p2p_sock is not None:
+                    send_p2p_binary_frame(p2p_sock, P2P_MAGIC_END, 0, cipher=p2p_cipher)
+                else:
+                    self.send_frame(
+                        {
+                            "type": "FILE_END",
+                            "session_id": session.session_id,
+                        },
+                        b"",
+                    )
 
         except Exception as error:
             session.cancel_event.set()
@@ -218,6 +322,12 @@ class FileSender:
                     pass
                 if self.on_error:
                     self.on_error(session.session_id, session.filename, f"Upload error: {error}")
+        finally:
+            if p2p_sock is not None:
+                try:
+                    p2p_sock.close()
+                except OSError:
+                    pass
 
     def cancel_transfer(self, session_id: str, reason: str = "Sender cancelled transfer") -> None:
         """Cancel an ongoing file upload session."""

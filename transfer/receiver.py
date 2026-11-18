@@ -6,6 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import secrets
+import socket
 import threading
 from typing import BinaryIO, Callable, Any
 
@@ -15,6 +17,15 @@ from transfer.integrity import (
     parse_non_negative_int,
     sanitize_filename,
     verify_file,
+)
+from transfer.p2p import (
+    P2P_MAGIC_CHUNK,
+    P2P_MAGIC_END,
+    get_local_p2p_hosts,
+    make_p2p_cipher,
+    recv_p2p_binary_frame,
+    recv_p2p_json,
+    send_p2p_json,
 )
 
 SendFrameCallable = Callable[[dict[str, Any], bytes], None]
@@ -37,6 +48,7 @@ class DownloadSession:
     file_handle: BinaryIO
     received_bytes: int = 0
     next_chunk_index: int = 0
+    p2p_server_socket: socket.socket | None = None
 
 
 class FileReceiver:
@@ -50,6 +62,7 @@ class FileReceiver:
         on_progress: ProgressCallback | None = None,
         on_complete: CompleteCallback | None = None,
         on_error: ErrorCallback | None = None,
+        enable_p2p: bool = True,
     ) -> None:
         self.username = username
         self.send_frame = send_frame_fn
@@ -60,6 +73,7 @@ class FileReceiver:
         self.on_progress = on_progress
         self.on_complete = on_complete
         self.on_error = on_error
+        self.enable_p2p = enable_p2p
 
         self._sessions: dict[str, DownloadSession] = {}
         self._lock = threading.Lock()
@@ -177,11 +191,95 @@ class FileReceiver:
             self._handle_file_end({"session_id": session_id})
             return
 
-        # Notify sender that receiver is ready
+        # Notify sender that receiver is ready (with optional direct P2P listener)
+        accept_header: dict[str, Any] = {"type": "FILE_ACCEPT", "session_id": session_id}
+        if self.enable_p2p:
+            p2p_info = self._start_p2p_listener(session)
+            if p2p_info is not None:
+                accept_header.update(p2p_info)
+
         try:
-            self.send_frame({"type": "FILE_ACCEPT", "session_id": session_id}, b"")
+            self.send_frame(accept_header, b"")
         except Exception as error:
             self._abort_session(session_id, f"Failed to send FILE_ACCEPT: {error}")
+
+    def _start_p2p_listener(self, session: DownloadSession) -> dict[str, Any] | None:
+        """Bind a temporary ephemeral TCP listener for direct P2P chunk reception."""
+        srv_sock: socket.socket | None = None
+        try:
+            srv_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv_sock.bind(("0.0.0.0", 0))
+            srv_sock.listen(1)
+            srv_sock.settimeout(12.0)
+            port = int(srv_sock.getsockname()[1])
+            token = secrets.token_hex(16)
+            session.p2p_server_socket = srv_sock
+            worker = threading.Thread(
+                target=self._p2p_accept_worker,
+                args=(session.session_id, srv_sock, token),
+                name=f"p2p-recv-{session.session_id[:8]}",
+                daemon=True,
+            )
+            worker.start()
+            return {
+                "p2p_hosts": get_local_p2p_hosts(),
+                "p2p_port": port,
+                "p2p_token": token,
+            }
+        except Exception:
+            if srv_sock is not None:
+                try:
+                    srv_sock.close()
+                except OSError:
+                    pass
+            session.p2p_server_socket = None
+            return None
+
+    def _p2p_accept_worker(
+        self,
+        session_id: str,
+        srv_sock: socket.socket,
+        expected_token: str,
+    ) -> None:
+        """Accept one authenticated direct P2P sender connection and feed chunks into FileReceiver."""
+        conn: socket.socket | None = None
+        try:
+            conn, _addr = srv_sock.accept()
+            conn.settimeout(15.0)
+            hs = recv_p2p_json(conn)
+            if hs.get("session_id") != session_id or not secrets.compare_digest(
+                str(hs.get("p2p_token", "")), expected_token
+            ):
+                send_p2p_json(conn, {"ok": False, "reason": "Unauthorized P2P token"})
+                return
+            send_p2p_json(conn, {"ok": True})
+            cipher = make_p2p_cipher(expected_token)
+
+            while True:
+                magic, chunk_index, payload = recv_p2p_binary_frame(conn, cipher=cipher)
+                if magic == P2P_MAGIC_CHUNK:
+                    self._handle_file_chunk(
+                        {"session_id": session_id, "chunk_index": chunk_index},
+                        payload,
+                    )
+                elif magic == P2P_MAGIC_END:
+                    self._handle_file_end({"session_id": session_id})
+                    break
+                else:
+                    raise ValueError(f"Unknown P2P frame magic: {magic!r}")
+        except Exception:
+            # If sender fell back to server relay or session aborted, exit quietly.
+            pass
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+            try:
+                srv_sock.close()
+            except OSError:
+                pass
 
     def _handle_file_chunk(self, header: dict[str, Any], chunk_bytes: bytes) -> None:
         """Validate sequence index, append bytes to the temp file, and notify progress."""
@@ -277,6 +375,12 @@ class FileReceiver:
             return
 
         filename = session.filename
+        if session.p2p_server_socket is not None:
+            try:
+                session.p2p_server_socket.close()
+            except OSError:
+                pass
+            session.p2p_server_socket = None
         try:
             session.file_handle.close()
         except Exception:

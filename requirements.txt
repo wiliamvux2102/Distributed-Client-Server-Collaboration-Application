@@ -2,3 +2,5 @@
 prompt_toolkit>=3.0,<4
 # Desktop GUI dependency.
 PySide6>=6.7,<7
+# Authenticated encryption (AES-256-GCM) for direct P2P file transfer.
+cryptography>=42.0

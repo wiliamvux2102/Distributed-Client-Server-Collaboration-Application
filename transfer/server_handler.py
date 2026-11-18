@@ -36,6 +36,8 @@ class ServerTransferSession:
     created_at: float = field(default_factory=time.time)
     last_updated: float = field(default_factory=time.time)
     state: str = "INIT"
+    is_broadcast: bool = False
+    p2p_offered: bool = False
 
 
 class FileTransferServerHandler:
@@ -216,6 +218,9 @@ class FileTransferServerHandler:
                     error_reason = f"Cannot accept session in state '{session.state}'."
                 else:
                     session.state = "ACCEPTED"
+                    p2p_port = header.get("p2p_port")
+                    if isinstance(p2p_port, int) and not isinstance(p2p_port, bool) and p2p_port > 0:
+                        session.p2p_offered = True
                     target_user = session.sender
             elif msg_type == "FILE_CHUNK":
                 if from_user != session.sender:
@@ -244,7 +249,9 @@ class FileTransferServerHandler:
                 elif session.filesize == 0 and session.state not in ("INIT", "WAITING_RESULT"):
                     error_code = "ERR_INVALID_STATE"
                     error_reason = f"Cannot send FILE_RESULT in state '{session.state}'."
-                elif session.filesize > 0 and session.state != "WAITING_RESULT":
+                elif session.filesize > 0 and session.state != "WAITING_RESULT" and not (
+                    session.p2p_offered and session.state == "ACCEPTED"
+                ):
                     error_code = "ERR_INVALID_STATE"
                     error_reason = f"Cannot send FILE_RESULT in state '{session.state}' before FILE_END."
                 else:
