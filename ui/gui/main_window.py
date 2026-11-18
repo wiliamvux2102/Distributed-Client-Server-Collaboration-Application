@@ -472,6 +472,10 @@ class TransferItemCard(QFrame):
 
         is_upload = rec.direction == "upload"
         peer_part = f"@{rec.peer}" if rec.peer else ""
+        if rec.room_id and rec.peer:
+            peer_part = f"@{rec.peer} ({rec.room_id})"
+        elif rec.room_id:
+            peer_part = rec.room_id
         size_info = f"{format_bytes(rec.current_bytes)} / {format_bytes(rec.total_bytes)}"
         if rec.state == "INIT_SENT":
             self.status_label.setStyleSheet(f"color: {PALETTE['text_muted']}; font-size: 8.5pt;")
@@ -1700,6 +1704,7 @@ class MainWindow(QMainWindow):
             total=event.total,
             saved_path=event.saved_path,
             error=event.error,
+            room_id=event.room_id,
         )
         self.transfer_empty_label.hide()
         self.transfer_scroll.show()
@@ -1716,17 +1721,27 @@ class MainWindow(QMainWindow):
 
         self.transfer_count_lbl.setText(str(len(self.store.transfers)))
 
-        # Route broadcast uploads as one aggregated bubble in #all and broadcast downloads into #all;
-        # keep point-to-point transfers inside each peer's DM conversation.
+        # Route broadcast/room uploads as one aggregated bubble in #all / #room,
+        # route broadcast/room downloads into #all / #room,
+        # and keep point-to-point transfers inside each peer's DM conversation.
         conv_id = ""
         file_msg = None
         inserted = False
-        if event.is_broadcast and event.batch_id and event.direction == "upload":
-            conv_id = BROADCAST_CONV_ID
+        if event.batch_id and event.direction == "upload":
+            target_conv = event.room_id if event.room_id else BROADCAST_CONV_ID
+            conv_id = target_conv
             file_msg, inserted = self.store.upsert_broadcast_batch_file(
                 username=self._current_username,
                 batch_id=event.batch_id,
                 batch_total=event.batch_total,
+                rec=rec,
+                conv_id=target_conv,
+            )
+        elif event.room_id:
+            conv_id = event.room_id
+            file_msg, inserted = self.store.upsert_file_message(
+                conv_id=event.room_id,
+                username=self._current_username,
                 rec=rec,
             )
         elif event.is_broadcast:
@@ -1920,6 +1935,12 @@ class MainWindow(QMainWindow):
             self._refresh_sidebar()
             self._load_active_conversation()
 
+    def _set_transient_status(self, text: str, timeout_ms: int = 4000) -> None:
+        """Display a temporary status note in the conversation header and restore default meta on timeout."""
+        self._status_reset_timer.stop()
+        self.global_status_label.setText(text)
+        self._status_reset_timer.start(timeout_ms)
+
     def _update_conv_header_meta(self) -> None:
         cid = self.store.active_conv_id
         if cid == BROADCAST_CONV_ID:
@@ -1947,15 +1968,15 @@ class MainWindow(QMainWindow):
     def _load_active_conversation(self) -> None:
         cid = self.store.active_conv_id
         conv = self.store.conversations[cid]
-        is_dm = not conv.is_broadcast
         self._update_conv_header_meta()
         self.attach_button.setEnabled(True)
         self.header_send_file_btn.setEnabled(True)
-        tip = (
-            f"Gửi file tới @{cid}"
-            if is_dm
-            else "Gửi file tới tất cả người dùng đang online"
-        )
+        if cid == BROADCAST_CONV_ID:
+            tip = "Gửi file tới tất cả người dùng đang online"
+        elif cid.startswith("#"):
+            tip = f"Gửi file vào phòng {cid}"
+        else:
+            tip = f"Gửi file tới @{cid}"
         self.attach_button.setToolTip(tip)
         self.header_send_file_btn.setToolTip(tip)
         self.message_model.set_messages(conv.messages)
@@ -2053,8 +2074,7 @@ class MainWindow(QMainWindow):
             if not peers:
                 self._show_error_banner(f"Không có thành viên nào khác trong phòng {cid} đang online.")
                 return
-            for peer in peers:
-                self.controller.send_file(peer, local_path)
+            self.controller.send_file_room(cid, peers, local_path)
             self._set_transient_status(f"Đang gửi '{local_path.name}' tới {len(peers)} thành viên {cid}...")
             return
 
@@ -2085,6 +2105,32 @@ class MainWindow(QMainWindow):
             if not peers:
                 self._show_error_banner(
                     "Không còn người dùng nào khác đang online để gửi file."
+                )
+                return
+            self._send_file_path(Path(file_path))
+            return
+
+        if cid.startswith("#"):
+            members = self.store.room_members.get(cid, [])
+            peers = [m for m in members if m != self._current_username and m in self.store.online_users]
+            if not peers:
+                self._show_error_banner(
+                    f"Không có thành viên nào khác trong phòng {cid} đang online để gửi file."
+                )
+                return
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, f"Chọn file gửi vào phòng {cid} ({len(peers)} người online)"
+            )
+            if not file_path:
+                return
+            if self.controller.state != ConnectionState.CONNECTED:
+                self._show_error_banner("Kết nối đã bị ngắt trước khi gửi file.")
+                return
+            members = self.store.room_members.get(cid, [])
+            peers = [m for m in members if m != self._current_username and m in self.store.online_users]
+            if not peers:
+                self._show_error_banner(
+                    f"Không còn thành viên nào khác trong phòng {cid} đang online."
                 )
                 return
             self._send_file_path(Path(file_path))

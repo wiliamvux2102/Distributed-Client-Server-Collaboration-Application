@@ -85,6 +85,7 @@ class FileSender:
         receiver_username: str,
         file_path: str | Path,
         is_broadcast: bool = False,
+        room_id: str = "",
     ) -> str:
         """Extract metadata, initialize session, and dispatch FILE_INIT."""
         path = Path(file_path)
@@ -112,6 +113,8 @@ class FileSender:
         }
         if is_broadcast:
             header["is_broadcast"] = True
+        if room_id:
+            header["room_id"] = room_id
 
         try:
             self.send_frame(header, b"")
@@ -129,9 +132,12 @@ class FileSender:
         receiver_username: str,
         file_path: str | Path,
         is_broadcast: bool = False,
+        room_id: str = "",
     ) -> str:
         """Start an outgoing file transfer."""
-        return self.start_transfer(receiver_username, file_path, is_broadcast=is_broadcast)
+        return self.start_transfer(
+            receiver_username, file_path, is_broadcast=is_broadcast, room_id=room_id
+        )
 
     def handle_incoming_message(self, header: dict[str, Any], payload: bytes = b"") -> None:
         """Process control messages (FILE_ACCEPT, FILE_RESULT, FILE_ERROR)."""
@@ -467,12 +473,14 @@ class ClientFileTransferManager:
                 peer = header.get("receiver", "")
                 total = int(header.get("filesize", 0))
                 is_broadcast = bool(header.get("is_broadcast", False))
+                room_id = str(header.get("room_id", "") or "")
                 with self._lock:
                     self._active_transfers[session_id] = {
                         "filename": filename,
                         "peer": peer,
                         "direction": "upload",
                         "is_broadcast": is_broadcast,
+                        "room_id": room_id,
                         "current": 0,
                         "total": total,
                     }
@@ -484,6 +492,7 @@ class ClientFileTransferManager:
                     "peer": peer,
                     "filename": filename,
                     "is_broadcast": is_broadcast,
+                    "room_id": room_id,
                     "current": 0,
                     "total": total,
                 })
@@ -555,12 +564,14 @@ class ClientFileTransferManager:
                 raw_sender = message.get("sender", "unknown")
                 sender = raw_sender if isinstance(raw_sender, str) else "unknown"
                 is_broadcast = bool(message.get("is_broadcast", False))
+                room_id = str(message.get("room_id", "") or "")
                 with self._lock:
                     self._active_transfers[session_id] = {
                         "filename": filename,
                         "peer": sender,
                         "direction": "download",
                         "is_broadcast": is_broadcast,
+                        "room_id": room_id,
                         "current": 0,
                         "total": filesize,
                     }
@@ -572,6 +583,7 @@ class ClientFileTransferManager:
                     "peer": sender,
                     "filename": filename,
                     "is_broadcast": is_broadcast,
+                    "room_id": room_id,
                     "current": 0,
                     "total": filesize,
                 })
@@ -597,6 +609,7 @@ class ClientFileTransferManager:
         recipient: str,
         filepath: str | Path,
         is_broadcast: bool = False,
+        room_id: str = "",
     ) -> None:
         """CLI entrypoint for the /sendfile command."""
         try:
@@ -608,7 +621,7 @@ class ClientFileTransferManager:
             if not path.is_file():
                 self.print_fn(f"[ERROR] File not found: {path}")
                 return
-            self.sender.start_transfer(recipient, path, is_broadcast=is_broadcast)
+            self.sender.start_transfer(recipient, path, is_broadcast=is_broadcast, room_id=room_id)
         except Exception as error:
             self.print_fn(f"[FILE ERROR] {error}")
 
@@ -621,6 +634,7 @@ class ClientFileTransferManager:
                     "peer": "",
                     "direction": "upload",
                     "is_broadcast": False,
+                    "room_id": "",
                     "current": current,
                     "total": total,
                 }
@@ -631,6 +645,7 @@ class ClientFileTransferManager:
             direction = info["direction"]
             peer = info.get("peer", "")
             is_broadcast = bool(info.get("is_broadcast", False))
+            room_id = str(info.get("room_id", "") or "")
 
         self._trigger_update()
         self._emit_event({
@@ -640,6 +655,7 @@ class ClientFileTransferManager:
             "peer": peer,
             "filename": filename,
             "is_broadcast": is_broadcast,
+            "room_id": room_id,
             "current": current,
             "total": total,
         })
@@ -651,6 +667,7 @@ class ClientFileTransferManager:
         peer = info.get("peer", "") if info else ""
         total = info.get("total", 0) if info else 0
         is_broadcast = bool(info.get("is_broadcast", False)) if info else False
+        room_id = str(info.get("room_id", "") or "") if info else ""
         self._emit_event({
             "event": "completed",
             "session_id": session_id,
@@ -658,6 +675,7 @@ class ClientFileTransferManager:
             "peer": peer,
             "filename": filename,
             "is_broadcast": is_broadcast,
+            "room_id": room_id,
             "current": total,
             "total": total,
             "saved_path": "",
@@ -674,6 +692,7 @@ class ClientFileTransferManager:
         peer = info.get("peer", "") if info else ""
         total = info.get("total", 0) if info else 0
         is_broadcast = bool(info.get("is_broadcast", False)) if info else False
+        room_id = str(info.get("room_id", "") or "") if info else ""
         self._emit_event({
             "event": "completed",
             "session_id": session_id,
@@ -681,6 +700,7 @@ class ClientFileTransferManager:
             "peer": peer,
             "filename": filename,
             "is_broadcast": is_broadcast,
+            "room_id": room_id,
             "current": total,
             "total": total,
             "saved_path": saved_path,
@@ -699,6 +719,9 @@ class ClientFileTransferManager:
         direction = info.get("direction", "upload") if info else "upload"
         peer = info.get("peer", "") if info else ""
         is_broadcast = bool(info.get("is_broadcast", False)) if info else False
+        room_id = str(info.get("room_id", "") or "") if info else ""
+        current = int(info.get("current", 0)) if info else 0
+        total = int(info.get("total", 0)) if info else 0
         self._emit_event({
             "event": "failed",
             "session_id": session_id,
@@ -706,6 +729,9 @@ class ClientFileTransferManager:
             "peer": peer,
             "filename": filename,
             "is_broadcast": is_broadcast,
+            "room_id": room_id,
+            "current": current,
+            "total": total,
             "error": err,
         })
         self.print_fn(f"[FILE ERROR] {filename}: {err}")

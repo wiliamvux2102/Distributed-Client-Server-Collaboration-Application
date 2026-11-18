@@ -19,6 +19,8 @@ from common import message_types as mt
 from infrastructure.client_connection import ClientSession
 from transfer.sender import ClientFileTransferManager
 
+BROADCAST_CONV_ID = "#all"
+
 
 class ConnectionState(str, Enum):
     DISCONNECTED = "DISCONNECTED"
@@ -113,6 +115,7 @@ class TransferSnapshotEvent:
     is_broadcast: bool = False
     batch_id: str = ""
     batch_total: int = 0
+    room_id: str = ""
 
 
 class GuiSessionBridge(QObject):
@@ -444,15 +447,21 @@ class SessionController:
             if event_name == "started" and direction == "upload" and session_id:
                 tls_batch_id = getattr(self._batch_tls, "batch_id", "")
                 tls_batch_total = getattr(self._batch_tls, "batch_total", 0)
+                tls_room_id = getattr(self._batch_tls, "room_id", "")
                 if tls_batch_id:
-                    self._broadcast_batches[session_id] = (tls_batch_id, tls_batch_total)
+                    self._broadcast_batches[session_id] = (tls_batch_id, tls_batch_total, tls_room_id)
 
-            batch_id, batch_total = (
-                self._broadcast_batches.get(session_id, ("", 0))
-                if session_id
-                else ("", 0)
-            )
-            if batch_id:
+            batch_entry = self._broadcast_batches.get(session_id)
+            if batch_entry:
+                batch_id = batch_entry[0]
+                batch_total = batch_entry[1]
+                batch_room_id = batch_entry[2] if len(batch_entry) > 2 else ""
+            else:
+                batch_id, batch_total, batch_room_id = "", 0, ""
+
+            payload_room_id = str(payload.get("room_id", "") or "")
+            room_id = payload_room_id or batch_room_id
+            if batch_id and not room_id:
                 is_broadcast = True
 
             if event_name == "progress" and session_id:
@@ -481,6 +490,7 @@ class SessionController:
                 is_broadcast=is_broadcast,
                 batch_id=batch_id,
                 batch_total=batch_total,
+                room_id=room_id,
             )
         )
 
@@ -588,7 +598,29 @@ class SessionController:
             )
             return
         self._submit_worker(
-            self._send_file_broadcast_worker, gen, ft_manager, targets, Path(file_path)
+            self._send_file_broadcast_worker, gen, ft_manager, targets, Path(file_path), BROADCAST_CONV_ID
+        )
+
+    def send_file_room(self, room_id: str, recipients: list[str], file_path: str | Path) -> None:
+        with self._lock:
+            gen = self._session_gen
+            ft_manager = self._ft_manager
+            session = self._session
+            if self._state != ConnectionState.CONNECTED or ft_manager is None or session is None:
+                return
+            self_user = session.username
+        targets = [u for u in recipients if u and u != self_user]
+        if not targets:
+            self.bridge.server_error_received.emit(
+                ErrorEvent(
+                    gen=gen,
+                    code="NO_ONLINE_ROOM_MEMBERS",
+                    message=f"Không có thành viên nào khác trong phòng {room_id} đang online để gửi file.",
+                )
+            )
+            return
+        self._submit_worker(
+            self._send_file_broadcast_worker, gen, ft_manager, targets, Path(file_path), room_id
         )
 
     def _send_file_broadcast_worker(
@@ -597,6 +629,7 @@ class SessionController:
         ft_manager: ClientFileTransferManager,
         recipients: list[str],
         path: Path,
+        conv_id: str = BROADCAST_CONV_ID,
     ) -> None:
         if not path.is_file():
             self.bridge.server_error_received.emit(
@@ -606,12 +639,17 @@ class SessionController:
         file_size = path.stat().st_size
         batch_id = uuid.uuid4().hex
         batch_total = len(recipients)
+        is_room = conv_id != BROADCAST_CONV_ID and conv_id.startswith("#")
+        room_id = conv_id if is_room else ""
         self._batch_tls.batch_id = batch_id
         self._batch_tls.batch_total = batch_total
+        self._batch_tls.room_id = room_id
         try:
             for idx, peer in enumerate(recipients):
                 try:
-                    ft_manager.sender.start_transfer(peer, path, is_broadcast=True)
+                    ft_manager.sender.start_transfer(
+                        peer, path, is_broadcast=(not is_room), room_id=room_id
+                    )
                 except Exception as error:
                     self.bridge.server_error_received.emit(
                         ErrorEvent(
@@ -631,14 +669,16 @@ class SessionController:
                             current=0,
                             total=file_size,
                             error=str(error),
-                            is_broadcast=True,
+                            is_broadcast=(not is_room),
                             batch_id=batch_id,
                             batch_total=batch_total,
+                            room_id=room_id,
                         )
                     )
         finally:
             self._batch_tls.batch_id = ""
             self._batch_tls.batch_total = 0
+            self._batch_tls.room_id = ""
 
     def _send_safe(self, gen: int, session: ClientSession, message: dict[str, Any]) -> None:
         try:

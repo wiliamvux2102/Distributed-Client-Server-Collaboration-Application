@@ -714,6 +714,136 @@ class GuiControllerAndWindowTests(unittest.TestCase):
             recv_win.close()
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
+    def test_room_file_transfer_routes_both_sender_and_receiver_into_room_conversation(self) -> None:
+        import shutil
+        import tempfile
+        from unittest.mock import Mock
+
+        _get_app()
+        tmp_dir = Path(tempfile.mkdtemp())
+        sender_ctrl = SessionController()
+        sender_win = MainWindow(controller=sender_ctrl)
+        recv_ctrl = SessionController()
+        recv_win = MainWindow(controller=recv_ctrl)
+
+        try:
+            # --- 1) Sender side: room transfer aggregates into room conversation ---
+            sender_ctrl._state = ConnectionState.CONNECTED
+            sender_ctrl._session_gen = 20
+            sender_ctrl._session = Mock(username="alice")
+            sender_win._on_connected(
+                ConnectResultEvent(gen=20, username="alice", server_host="127.0.0.1", server_port=5000)
+            )
+
+            # Join room #nhom1 on sender window
+            sender_win.store.room_members["#nhom1"] = ["alice", "bob", "charlie"]
+            sender_win.store.online_users = {"bob", "charlie"}
+            sender_win.store.set_active_conversation("#nhom1")
+            sender_win._refresh_sidebar()
+            sender_win._load_active_conversation()
+
+            # Test transient status helper does not crash and updates label
+            sender_win._set_transient_status("Đang gửi file...", timeout_ms=500)
+            self.assertEqual(sender_win.global_status_label.text(), "Đang gửi file...")
+
+            sent_frames: list[dict] = []
+            ft_mgr = ClientFileTransferManager(
+                username="alice",
+                send_fn=sent_frames.append,
+                print_fn=lambda _t: None,
+                on_event=lambda payload: sender_ctrl._on_transfer_event(20, payload),
+                download_dir=tmp_dir / "alice_dl",
+            )
+            sender_ctrl._ft_manager = ft_mgr
+
+            sample_file = tmp_dir / "room_plan.pdf"
+            sample_file.write_bytes(b"ROOM-PLAN-PDF-" * 150)
+
+            sender_ctrl.send_file_room("#nhom1", ["bob", "charlie"], sample_file)
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                QApplication.processEvents()
+                if len(sender_win.store.transfers) == 2 and sender_win.message_model.rowCount() == 1:
+                    break
+                time.sleep(0.01)
+
+            self.assertEqual(len(sender_win.store.transfers), 2)
+            self.assertEqual(len(sender_win.store.conversations["#nhom1"].messages), 1)
+            self.assertNotIn("bob", sender_win.store.conversations)
+            self.assertNotIn("charlie", sender_win.store.conversations)
+
+            room_card = sender_win.store.conversations["#nhom1"].messages[0]
+            self.assertEqual(room_card.kind, "file")
+            self.assertTrue(room_card.is_outgoing)
+            self.assertEqual(room_card.total_bytes, sample_file.stat().st_size * 2)
+
+            self.assertEqual(len(sent_frames), 2)
+            self.assertTrue(all(f.get("room_id") == "#nhom1" for f in sent_frames))
+            self.assertFalse(any(f.get("is_broadcast") is True for f in sent_frames))
+
+            # Finish Bob upload, fail Charlie upload
+            sids = list(sender_win.store.transfers.keys())
+            ft_mgr.handle_incoming({"type": "FILE_RESULT", "session_id": sids[0], "status": "OK", "reason": ""})
+            ft_mgr.handle_incoming({"type": "FILE_ERROR", "session_id": sids[1], "reason": "Connection lost"})
+            QApplication.processEvents()
+            card_final = sender_win.store.conversations["#nhom1"].messages[0]
+            self.assertEqual(card_final.file_state, "FAILED")
+            self.assertIn("thành viên #nhom1", card_final.status_note)
+            self.assertIn("1 thất bại", card_final.status_note)
+
+            # --- 2) Receiver side: incoming room file goes to room conversation ---
+            recv_ctrl._session_gen = 21
+            recv_win._on_connected(
+                ConnectResultEvent(gen=21, username="bob", server_host="127.0.0.1", server_port=5000)
+            )
+            recv_win.store.room_members["#nhom1"] = ["alice", "bob", "charlie"]
+            recv_win.store.set_active_conversation("#nhom1")
+            recv_win._refresh_sidebar()
+            recv_win._load_active_conversation()
+
+            recv_win._on_transfer_event(
+                TransferSnapshotEvent(
+                    gen=21,
+                    event="started",
+                    session_id="rx-room-1",
+                    direction="download",
+                    peer="alice",
+                    filename="room_plan.pdf",
+                    current=0,
+                    total=2100,
+                    room_id="#nhom1",
+                )
+            )
+            recv_win._on_transfer_event(
+                TransferSnapshotEvent(
+                    gen=21,
+                    event="completed",
+                    session_id="rx-room-1",
+                    direction="download",
+                    peer="alice",
+                    filename="room_plan.pdf",
+                    current=2100,
+                    total=2100,
+                    saved_path="downloads/room_plan.pdf",
+                    room_id="#nhom1",
+                )
+            )
+            QApplication.processEvents()
+
+            self.assertNotIn("alice", recv_win.store.conversations)
+            self.assertEqual(len(recv_win.store.conversations["#nhom1"].messages), 1)
+            rx_msg = recv_win.store.conversations["#nhom1"].messages[0]
+            self.assertEqual(rx_msg.sender, "alice")
+            self.assertFalse(rx_msg.is_outgoing)
+            self.assertEqual(rx_msg.file_state, "COMPLETED")
+            self.assertEqual(rx_msg.saved_path, "downloads/room_plan.pdf")
+        finally:
+            sender_ctrl.shutdown_sync(timeout=0.5)
+            recv_ctrl.shutdown_sync(timeout=0.5)
+            sender_win.close()
+            recv_win.close()
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
     def test_live_tls_gui_broadcast_file_transfer_e2e(self) -> None:
         import shutil
         import socket

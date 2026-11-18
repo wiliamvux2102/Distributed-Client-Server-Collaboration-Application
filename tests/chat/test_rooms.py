@@ -129,6 +129,95 @@ class RoomChatTests(unittest.TestCase):
         self.assertTrue(gui_store.conversations["#nhom2"].is_room)
         self.assertEqual(gui_store.conversations["#nhom2"].unread_count, 1)
 
+    def test_room_file_transfer_metadata_and_store_routing(self) -> None:
+        from transfer.sender import ClientFileTransferManager, FileSender
+        from ui.gui.models import TransferRecord
+
+        sent_frames: list[dict] = []
+        sender = FileSender(
+            username="alice",
+            send_frame_fn=lambda h, p: sent_frames.append(dict(h)),
+        )
+        sample = self.tmp_dir / "room_doc.txt"
+        sample.write_text("hello room file transfer", encoding="utf-8")
+
+        sid = sender.start_transfer("bob", sample, room_id="#nhom1")
+        self.assertTrue(sid)
+        self.assertEqual(sent_frames[-1]["type"], "FILE_INIT")
+        self.assertEqual(sent_frames[-1]["room_id"], "#nhom1")
+        self.assertFalse(sent_frames[-1].get("is_broadcast", False))
+
+        # ClientFileTransferManager emits events with room_id
+        events: list[dict] = []
+        ft_mgr = ClientFileTransferManager(
+            username="alice",
+            send_fn=sent_frames.append,
+            print_fn=lambda _t: None,
+            on_event=events.append,
+            download_dir=self.tmp_dir / "alice_dl",
+        )
+        ft_mgr.sender.start_transfer("bob", sample, room_id="#nhom1")
+        self.assertTrue(any(e.get("event") == "started" and e.get("room_id") == "#nhom1" for e in events))
+
+        # Receiver manager receives FILE_INIT with room_id
+        rx_events: list[dict] = []
+        rx_mgr = ClientFileTransferManager(
+            username="bob",
+            send_fn=lambda _m: None,
+            print_fn=lambda _t: None,
+            on_event=rx_events.append,
+            download_dir=self.tmp_dir / "bob_dl",
+        )
+        init_frame = dict(sent_frames[-1])
+        init_frame.pop("binary_payload_base64", None)
+        rx_mgr.handle_incoming(init_frame)
+        self.assertTrue(any(e.get("event") == "started" and e.get("room_id") == "#nhom1" for e in rx_events))
+
+        # ChatSessionStore routes room batch upload and room incoming file into #nhom1
+        store = ChatSessionStore()
+        rec_upload = TransferRecord(
+            session_id="room-batch-session-1",
+            direction="upload",
+            peer="bob",
+            filename="room_doc.txt",
+            total_bytes=100,
+            current_bytes=100,
+            state="COMPLETED",
+            room_id="#nhom1",
+        )
+        msg_up, _ = store.upsert_broadcast_batch_file(
+            username="alice",
+            batch_id="b-room-1",
+            batch_total=1,
+            rec=rec_upload,
+            conv_id="#nhom1",
+        )
+        self.assertIn("#nhom1", store.conversations)
+        self.assertTrue(store.conversations["#nhom1"].is_room)
+        self.assertEqual(len(store.conversations["#nhom1"].messages), 1)
+        self.assertEqual(store.conversations["#nhom1"].messages[0].text, "room_doc.txt")
+        self.assertIn("thành viên #nhom1", msg_up.status_note)
+
+        rec_download = TransferRecord(
+            session_id="room-rx-session-1",
+            direction="download",
+            peer="alice",
+            filename="room_doc.txt",
+            total_bytes=100,
+            current_bytes=100,
+            state="COMPLETED",
+            saved_path=str(self.tmp_dir / "room_doc.txt"),
+            room_id="#nhom1",
+        )
+        msg_rx, _ = store.upsert_file_message(
+            conv_id="#nhom1",
+            username="bob",
+            rec=rec_download,
+        )
+        self.assertEqual(len(store.conversations["#nhom1"].messages), 2)
+        self.assertEqual(msg_rx.sender, "alice")
+        self.assertFalse(msg_rx.is_outgoing)
+
 
 if __name__ == "__main__":
     unittest.main()

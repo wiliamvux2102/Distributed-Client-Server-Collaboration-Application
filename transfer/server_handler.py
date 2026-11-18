@@ -38,6 +38,7 @@ class ServerTransferSession:
     state: str = "INIT"
     is_broadcast: bool = False
     p2p_offered: bool = False
+    room_id: str = ""
 
 
 class FileTransferServerHandler:
@@ -152,6 +153,9 @@ class FileTransferServerHandler:
             self._send_error(sender_user, session_id, "ERR_USER_OFFLINE", f"User '{receiver}' is currently offline.")
             return
 
+        raw_room_id = header.get("room_id", "")
+        room_id = str(raw_room_id) if isinstance(raw_room_id, str) else ""
+
         duplicate = False
         with self._lock:
             if session_id in self._active_sessions:
@@ -164,6 +168,8 @@ class FileTransferServerHandler:
                     filename=filename,
                     filesize=filesize,
                     state="INIT",
+                    is_broadcast=raw_is_broadcast,
+                    room_id=room_id,
                 )
 
         if duplicate:

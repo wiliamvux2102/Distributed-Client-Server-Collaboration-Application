@@ -124,6 +124,7 @@ class TransferRecord:
     state: str = "INIT_SENT"  # INIT_SENT | TRANSFERRING | AWAITING_VERIFICATION | RECEIVING | COMPLETED | FAILED
     saved_path: str = ""
     error: str = ""
+    room_id: str = ""
 
 
 class ChatSessionStore:
@@ -302,11 +303,12 @@ class ChatSessionStore:
     ) -> tuple[MessageRecord, bool]:
         """Insert or update an inline file transfer bubble in a conversation."""
         is_broadcast = conv_id == BROADCAST_CONV_ID
-        conv = (
-            self.conversations[BROADCAST_CONV_ID]
-            if is_broadcast
-            else self.ensure_dm_conversation(conv_id)
-        )
+        if is_broadcast:
+            conv = self.conversations[BROADCAST_CONV_ID]
+        elif conv_id.startswith("#"):
+            conv = self.ensure_room_conversation(conv_id)
+        else:
+            conv = self.ensure_dm_conversation(conv_id)
         is_outgoing = rec.direction == "upload"
         sender = username if is_outgoing else rec.peer
 
@@ -353,8 +355,9 @@ class ChatSessionStore:
         batch_id: str,
         batch_total: int,
         rec: TransferRecord,
+        conv_id: str = BROADCAST_CONV_ID,
     ) -> tuple[MessageRecord, bool]:
-        """Aggregate fan-out broadcast upload sessions into one bubble inside #all."""
+        """Aggregate fan-out broadcast/room upload sessions into one bubble inside #all / #room."""
         sessions = self._broadcast_batches.setdefault(batch_id, {})
         sessions[rec.session_id] = rec
 
@@ -372,39 +375,42 @@ class ChatSessionStore:
         fail_cnt = sum(1 for r in sessions.values() if r.state == "FAILED")
         await_cnt = sum(1 for r in sessions.values() if r.state == "AWAITING_VERIFICATION")
 
+        target_desc = f"thành viên {conv_id}" if conv_id.startswith("#") else "người"
+
         if done_cnt + fail_cnt >= target_count:
             if fail_cnt == 0:
                 agg_state = "COMPLETED"
                 agg_current = agg_total
-                note = f"{format_bytes(per_file_bytes)}  •  Đã gửi tới {done_cnt}/{target_count} người (SHA-256 OK)"
+                note = f"{format_bytes(per_file_bytes)}  •  Đã gửi tới {done_cnt}/{target_count} {target_desc} (SHA-256 OK)"
             elif done_cnt > 0:
                 agg_state = "FAILED"
                 agg_current = per_file_bytes * done_cnt
-                note = f"Hoàn tất {done_cnt}/{target_count} người ({fail_cnt} thất bại)"
+                note = f"Hoàn tất {done_cnt}/{target_count} {target_desc} ({fail_cnt} thất bại)"
             else:
                 agg_state = "FAILED"
-                note = f"Thất bại tới {fail_cnt}/{target_count} người"
+                note = f"Thất bại tới {fail_cnt}/{target_count} {target_desc}"
         elif done_cnt + await_cnt + fail_cnt >= target_count and await_cnt > 0:
             agg_state = "AWAITING_VERIFICATION"
-            note = f"Đã gửi tới {target_count} người  •  Đang xác minh SHA-256 ({done_cnt}/{target_count})..."
+            note = f"Đã gửi tới {target_count} {target_desc}  •  Đang xác minh SHA-256 ({done_cnt}/{target_count})..."
         else:
             agg_state = "TRANSFERRING"
             note = (
-                f"Đang gửi tới {target_count} người ({done_cnt}/{target_count} xong)"
+                f"Đang gửi tới {target_count} {target_desc} ({done_cnt}/{target_count} xong)"
                 f"  •  {format_bytes(agg_current)} / {format_bytes(agg_total)}"
             )
 
         agg_rec = TransferRecord(
             session_id=f"batch:{batch_id}",
             direction="upload",
-            peer=BROADCAST_CONV_ID,
+            peer=conv_id,
             filename=filename,
             total_bytes=agg_total,
             current_bytes=agg_current,
             state=agg_state,
+            room_id=conv_id if conv_id.startswith("#") else "",
         )
         return self.upsert_file_message(
-            conv_id=BROADCAST_CONV_ID,
+            conv_id=conv_id,
             username=username,
             rec=agg_rec,
             status_note=note,
@@ -421,6 +427,7 @@ class ChatSessionStore:
         total: int,
         saved_path: str = "",
         error: str = "",
+        room_id: str = "",
     ) -> TransferRecord:
         rec = self.transfers.get(session_id)
         if rec is None:
@@ -433,8 +440,11 @@ class ChatSessionStore:
                 total_bytes=total,
                 current_bytes=current,
                 state=initial_state,
+                room_id=room_id,
             )
             self.transfers[session_id] = rec
+        elif room_id and not rec.room_id:
+            rec.room_id = room_id
 
         if event == "started":
             rec.state = "INIT_SENT" if direction == "upload" else "RECEIVING"
