@@ -6,16 +6,17 @@ Hệ thống chat và truyền tập tin theo mô hình Client–Server hỗ tr�
 
 - **Khám phá máy chủ tự động (LAN Discovery):** Client tự động dò tìm máy chủ trong mạng LAN qua `UDP_DISCOVER` hoặc cho phép chỉ định trực tiếp `<host>:<port>`.
 - **Bảo mật kênh truyền & Phiên hoạt động:** Kết nối TCP được bọc TLS (`>= TLSv1.2`, xác thực CA riêng và SNI `collab-server.local`); cơ chế `UDP_HEARTBEAT` sử dụng chữ ký HMAC-SHA256 kèm mốc thời gian Unix mili-giây tăng nghiêm ngặt để phát hiện mất kết nối và chống giả mạo/replay.
-- **Nhắn tin thời gian thực:** Hỗ trợ cả chat nhóm công khai (`BROADCAST_MESSAGE`) và nhắn tin riêng (`DIRECT_MESSAGE`) kèm phản hồi trạng thái giao nhận (`DELIVERY_STATUS`).
-- **Truyền tập tin an toàn:** Truyền đa khối (streaming theo chunk 64 KB), băm toàn vẹn SHA-256, ghi tệp tạm `.part` cô lập và tự động thu dọn khi hủy hoặc ngắt kết nối; hỗ trợ truyền 1–1 lẫn phát tới mọi người dùng đang online (`all` / `#all`).
+- **Nhắn tin thời gian thực & Phòng chat:** Hỗ trợ chat chung (`#all`), chat riêng 1–1 (`DIRECT_MESSAGE`) và phòng chat theo nhóm (`ROOM_CREATE`/`ROOM_JOIN`/`ROOM_MESSAGE`) kèm phản hồi trạng thái giao nhận (`DELIVERY_STATUS`).
+- **Lưu lịch sử bền vững (SQLite):** Máy chủ lưu lịch sử tin nhắn (`#all`, DM, phòng chat), danh sách phòng và nhật ký truyền tập tin vào `data/collab_history.db`, tự động đồng bộ lại khi người dùng đăng nhập hoặc gọi `/history`.
+- **Truyền tập tin an toàn (Hybrid P2P + Relay):** Ưu tiên kết nối TCP trực tiếp P2P mã hóa **AES-256-GCM** (dùng khóa dẫn xuất từ `p2p_token` trao đổi qua TLS, không qua Base64) và tự động chuyển về Server Relay theo chunk 64 KB khi bị NAT/Firewall chặn; kiểm tra toàn vẹn SHA-256, ghi tệp tạm `.part` và hỗ trợ gửi 1–1, trong phòng hoặc tới mọi người (`all` / `#all`).
 - **Hai chế độ giao diện Client:**
-  - **Desktop GUI (`PySide6`):** Quản lý danh sách hội thoại (`#all` và từng người dùng), đếm tin chưa đọc, khung soạn thảo đa dòng, bọc từ cho chuỗi dài và khung theo dõi tiến độ truyền file theo thời gian thực.
+  - **Desktop GUI (`PySide6`):** Quản lý kênh `#all`, phòng chat (`+ Phòng`), hội thoại riêng, đếm tin chưa đọc, khung soạn thảo đa dòng và khung theo dõi tiến độ truyền file theo thời gian thực.
   - **CLI (`prompt_toolkit`):** Hỗ trợ đầy đủ lệnh tương tác với thanh trạng thái tiến độ một dòng ở đáy màn hình, không làm gián đoạn luồng đọc tin nhắn.
 
 ## Yêu cầu môi trường & Cài đặt
 
 - **Python:** 3.12 trở lên (khuyến nghị chạy trong virtual environment `.venv`).
-- **Thư viện phụ thuộc:** Khai báo trong [requirements.txt](requirements.txt) gồm `prompt_toolkit>=3.0,<4` và `PySide6>=6.7,<7`.
+- **Thư viện phụ thuộc:** Khai báo trong [requirements.txt](requirements.txt) gồm `prompt_toolkit>=3.0,<4`, `PySide6>=6.7,<7` và `cryptography>=42.0`.
 
 ```bash
 python -m venv .venv
@@ -72,6 +73,8 @@ Các lệnh trong CLI (hoặc nhập văn bản trực tiếp để gửi chat c
 | Lệnh | Chức năng |
 | :--- | :--- |
 | `/online` | Xem danh sách người dùng đang trực tuyến |
+| `/history` | Tải lại lịch sử tin nhắn gần đây từ máy chủ |
+| `/room <create\|join\|leave\|list\|msg>` | Tạo, tham gia, rời, liệt kê hoặc nhắn tin trong phòng chat |
 | `/msg <user> <nội dung>` | Gửi tin nhắn riêng cho `<user>` |
 | `/all <nội dung>` | Gửi tin nhắn chung tới mọi người |
 | `/sendfile <user> <path>` | Gửi tập tin cho một người dùng cụ thể |
@@ -92,7 +95,7 @@ Các lệnh trong CLI (hoặc nhập văn bản trực tiếp để gửi chat c
 
 ## Kiểm thử tự động
 
-Chạy toàn bộ **132** unit test và integration test (bao gồm kiểm thử loopback trực tiếp qua UDP + TLS):
+Chạy toàn bộ **143** unit test và integration test (bao gồm kiểm thử loopback trực tiếp qua UDP + TLS, SQLite, P2P AES-256-GCM và Room chat):
 
 ```bash
 python -m unittest discover -s tests -t . -v
@@ -109,14 +112,15 @@ python -m tests.transfer.quick_local_test
 ```text
 .
 ├── certs/            # Chứng chỉ CA phát triển và cặp khóa/chứng chỉ TLS của Server
-├── chat/             # Định tuyến, kiểm tra hợp lệ và xử lý tin nhắn chat (Client & Server)
+├── chat/             # Định tuyến, quản lý phòng (rooms.py) và xử lý tin nhắn chat (Client & Server)
 ├── common/           # Định nghĩa thông điệp, cấu hình tập trung, TCP framing và console UTF-8
 ├── docs/             # Tài liệu kiến trúc, giao thức, cấu hình, kết quả kiểm thử và các sơ đồ
 ├── downloads/        # Thư mục mặc định lưu tệp nhận về phía Client
 ├── infrastructure/   # Lõi mạng: Server TCP/TLS, UDP Discovery/Heartbeat, UserRegistry, Auth, Dispatcher
 ├── scripts/          # Script đóng gói nộp bài và mô phỏng tải nhiều client
-├── tests/            # Bộ kiểm thử tự động theo từng phân hệ (chat, infrastructure, transfer, ui)
-├── transfer/         # Phân hệ truyền tập tin: toàn vẹn SHA-256, Sender, Receiver, Server relay
+├── storage/          # Lưu trữ SQLite (HistoryStore) cho lịch sử chat, phòng và truyền file
+├── tests/            # Bộ kiểm thử tự động theo từng phân hệ (chat, infrastructure, storage, transfer, ui)
+├── transfer/         # Phân hệ truyền tập tin: toàn vẹn SHA-256, P2P AES-256-GCM, Sender, Receiver, Server relay
 └── ui/               # Giao diện người dùng (CLI và Desktop PySide6 GUI)
 ```
 
