@@ -4,6 +4,7 @@ import ssl
 import secrets
 import sys
 import threading
+import time
 
 from common.protocol import recv_message, send_message
 from common import message_types as mt
@@ -165,6 +166,7 @@ def handle_client(
                                     "type": mt.LOGIN_OK,
                                     "username": username,
                                     "heartbeat_token": heartbeat_token,
+                                    "server_ts_ms": int(time.time() * 1000),
                                 },
                             )
 

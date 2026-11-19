@@ -116,12 +116,17 @@ def serve_discovery(stop_event: threading.Event) -> None:
                         and not isinstance(ts, bool)
                         and isinstance(sig, str)
                     ):
-                        user_registry.refresh_heartbeat_signed(
+                        ok = user_registry.refresh_heartbeat_signed(
                             username,
                             ts,
                             sig,
                             client_address[0],
                         )
+                        if not ok:
+                            print(
+                                f"[UDP] Heartbeat bị từ chối: user={username!r}, "
+                                f"source_ip={client_address[0]}"
+                            )
 
                     # Heartbeat là tín hiệu một chiều, không cần phản hồi UDP.
                     continue

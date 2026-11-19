@@ -318,7 +318,12 @@ class FileTransferServerHandler:
 
         with self._lock:
             for s in list(self._active_sessions.values()):
-                if (now - s.last_updated) > timeout_seconds:
+                effective_timeout = (
+                    max(timeout_seconds, 1800.0)
+                    if (s.p2p_offered and s.state == "ACCEPTED")
+                    else timeout_seconds
+                )
+                if (now - s.last_updated) > effective_timeout:
                     stale_sessions.append(s)
                     self._active_sessions.pop(s.session_id, None)
 

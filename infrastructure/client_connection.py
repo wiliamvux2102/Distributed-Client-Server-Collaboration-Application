@@ -187,12 +187,13 @@ def send_heartbeats(
     token: str,
     stop_event: threading.Event,
     on_error: ErrorHandler,
+    clock_offset_ms: int = 0,
 ) -> None:
     """Gửi heartbeat UDP đã ký HMAC-SHA256 định kỳ trong lúc client còn hoạt động."""
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
         while not stop_event.is_set():
-            ts = int(time.time() * 1000)
+            ts = int(time.time() * 1000) + clock_offset_ms
             sig = compute_heartbeat_hmac(token, username, ts)
             heartbeat = json.dumps({
                 "type": mt.UDP_HEARTBEAT,
@@ -226,11 +227,13 @@ class ClientSession:
         heartbeat_token: str,
         on_error: ErrorHandler,
         on_unhandled: MessageHandler,
+        clock_offset_ms: int = 0,
     ) -> None:
         self._connection = connection
         self.server_host = server_host
         self.username = username
         self._heartbeat_token = heartbeat_token
+        self._clock_offset_ms = clock_offset_ms
         self._on_error = on_error
         self._on_unhandled = on_unhandled
         self._stop_event = threading.Event()
@@ -299,6 +302,13 @@ class ClientSession:
             if not isinstance(authenticated_username, str):
                 raise ValueError("Server không gửi username hợp lệ.")
 
+            server_ts_ms = login_response.get("server_ts_ms")
+            clock_offset_ms = (
+                server_ts_ms - int(time.time() * 1000)
+                if isinstance(server_ts_ms, int) and not isinstance(server_ts_ms, bool)
+                else 0
+            )
+
             connection.settimeout(None)
             return cls(
                 connection=connection,
@@ -307,6 +317,7 @@ class ClientSession:
                 heartbeat_token=heartbeat_token,
                 on_error=on_error,
                 on_unhandled=on_unhandled,
+                clock_offset_ms=clock_offset_ms,
             )
         except Exception:
             connection.close()
@@ -353,6 +364,7 @@ class ClientSession:
                 self._heartbeat_token,
                 self._stop_event,
                 self._on_error,
+                self._clock_offset_ms,
             ),
             name="client-heartbeat",
             daemon=True,
