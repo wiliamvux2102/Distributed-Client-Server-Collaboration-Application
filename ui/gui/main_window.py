@@ -1153,6 +1153,9 @@ class MainWindow(QMainWindow):
         mode_lbl = QLabel("Chế độ")
         mode_lbl.setObjectName("MutedLabel")
         self.mode_combo = QComboBox()
+        popup_container = self.mode_combo.view().parentWidget()
+        if popup_container is not None:
+            popup_container.setContentsMargins(0, 0, 0, 0)
         self.mode_combo.addItem("Client–Server (Mặc định)", False)
         self.mode_combo.addItem("Ưu tiên P2P (AES-GCM)", True)
         self.mode_combo.setToolTip(

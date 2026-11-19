@@ -572,11 +572,16 @@ def build_stylesheet(mode: str = "dark") -> str:
         border: none;
     }}
 
+    QComboBox QFrame {{
+        background-color: {p["bg_card"]};
+        border: none;
+    }}
+
     QComboBox QAbstractItemView {{
         background-color: {p["bg_card"]};
         color: {p["text_primary"]};
         border: 1px solid {p["border_strong"]};
-        border-radius: 8px;
+        border-radius: 0px;
         padding: 4px;
         selection-background-color: {p["brand_soft"]};
         selection-color: {p["brand_soft_text"]};
