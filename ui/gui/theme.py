@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+_ICON_DIR = Path(__file__).with_name("assets").as_posix()
+
 DARK_PALETTE: dict[str, str] = {
     "mode": "dark",
     "bg_rail": "#0A0D11",
@@ -549,11 +553,13 @@ def build_stylesheet(mode: str = "dark") -> str:
 
     /* ComboBox & Dropdown Popup */
     QComboBox {{
+        combobox-popup: 0;
         background-color: {p["bg_panel"]};
         color: {p["text_primary"]};
         border: 1px solid {p["border_strong"]};
         border-radius: 8px;
-        padding: 5px 10px;
+        padding: 7px 30px 7px 10px;
+        min-height: 20px;
         font-size: 9pt;
     }}
 
@@ -561,28 +567,40 @@ def build_stylesheet(mode: str = "dark") -> str:
         border-color: {p["text_muted"]};
     }}
 
-    QComboBox:focus {{
+    QComboBox:focus, QComboBox:on {{
         border-color: {p["border_focus"]};
+    }}
+
+    QComboBox:disabled {{
+        color: {p["text_muted"]};
+        border-color: {p["border_subtle"]};
     }}
 
     QComboBox::drop-down {{
         subcontrol-origin: padding;
         subcontrol-position: top right;
-        width: 22px;
+        width: 28px;
         border: none;
     }}
 
-    QComboBox QFrame {{
+    QComboBox::down-arrow {{
+        image: url("{_ICON_DIR}/chevron-down-{p["mode"]}.svg");
+        width: 12px;
+        height: 12px;
+    }}
+
+    QFrame#TransportModePopup {{
         background-color: {p["bg_card"]};
-        border: none;
+        border: 1px solid {p["border_strong"]};
+        border-radius: 8px;
     }}
 
     QComboBox QAbstractItemView {{
         background-color: {p["bg_card"]};
         color: {p["text_primary"]};
-        border: 1px solid {p["border_strong"]};
-        border-radius: 0px;
-        padding: 4px;
+        border: none;
+        padding: 0px;
+        font-size: 9pt;
         selection-background-color: {p["brand_soft"]};
         selection-color: {p["brand_soft_text"]};
         outline: 0;
@@ -591,6 +609,15 @@ def build_stylesheet(mode: str = "dark") -> str:
     QComboBox QAbstractItemView::item {{
         padding: 6px 10px;
         border-radius: 6px;
-        min-height: 22px;
+        min-height: 24px;
+    }}
+
+    QComboBox QAbstractItemView::item:hover {{
+        background-color: {p["bg_hover"]};
+    }}
+
+    QComboBox QAbstractItemView::item:selected {{
+        background-color: {p["brand_soft"]};
+        color: {p["brand_soft_text"]};
     }}
     """

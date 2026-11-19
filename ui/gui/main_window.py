@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QStackedWidget,
+    QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
 )
@@ -1147,15 +1148,22 @@ class MainWindow(QMainWindow):
         self.kv_tls_val = self._add_kv_row(cc_layout, "Giao thức TLS", "TLS Verified")
         self.kv_cipher_val = self._add_kv_row(cc_layout, "Mã hóa", "AES-256", last=True)
 
-        mode_row = QHBoxLayout()
+        mode_row = QVBoxLayout()
         mode_row.setContentsMargins(0, 8, 0, 4)
-        mode_row.setSpacing(8)
+        mode_row.setSpacing(6)
         mode_lbl = QLabel("Chế độ")
         mode_lbl.setObjectName("MutedLabel")
         self.mode_combo = QComboBox()
-        popup_container = self.mode_combo.view().parentWidget()
+        self.mode_combo.setAccessibleName("Chế độ kết nối")
+        # A styled list avoids the native menu delegate and its platform-specific chrome.
+        mode_view = QListView(self.mode_combo)
+        mode_view.setFrameShape(QFrame.Shape.NoFrame)
+        mode_view.setSpacing(4)
+        mode_view.setItemDelegate(QStyledItemDelegate(mode_view))
+        self.mode_combo.setView(mode_view)
+        popup_container = mode_view.parentWidget()
         if popup_container is not None:
-            popup_container.setContentsMargins(0, 0, 0, 0)
+            popup_container.setObjectName("TransportModePopup")
         self.mode_combo.addItem("Client–Server (Mặc định)", False)
         self.mode_combo.addItem("Ưu tiên P2P (AES-GCM)", True)
         self.mode_combo.setToolTip(
@@ -1163,7 +1171,7 @@ class MainWindow(QMainWindow):
             "Ưu tiên P2P: thử nối thẳng AES-256-GCM cho DM/File, tự fallback về Server nếu bị NAT."
         )
         mode_row.addWidget(mode_lbl)
-        mode_row.addWidget(self.mode_combo, 1)
+        mode_row.addWidget(self.mode_combo)
         cc_layout.addLayout(mode_row)
 
         conn_block.addWidget(conn_card)
