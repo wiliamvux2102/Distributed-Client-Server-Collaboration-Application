@@ -218,6 +218,27 @@ class RoomChatTests(unittest.TestCase):
         self.assertEqual(msg_rx.sender, "alice")
         self.assertFalse(msg_rx.is_outgoing)
 
+    def test_join_room_pushes_room_history_immediately(self) -> None:
+        """Joining an existing room pushes HISTORY_SYNC for that room right after ROOM_STATUS."""
+        alice_sent: list[dict] = []
+        bob_sent: list[dict] = []
+        alice_ctx = SimpleNamespace(username="alice", send=alice_sent.append)
+        bob_ctx = SimpleNamespace(username="bob", send=bob_sent.append)
+
+        handle_room_create(alice_ctx, {"type": mt.ROOM_CREATE, "room_id": "dev"})
+        self.store.save_room_message("#dev", "alice", "tin nhan cu 1")
+        self.store.save_room_message("#dev", "alice", "tin nhan cu 2")
+
+        handle_room_join(bob_ctx, {"type": mt.ROOM_JOIN, "room_id": "dev"})
+
+        self.assertEqual(len(bob_sent), 2)
+        self.assertEqual(bob_sent[0]["type"], mt.ROOM_STATUS)
+        self.assertTrue(bob_sent[0]["ok"])
+        self.assertEqual(bob_sent[1]["type"], mt.HISTORY_SYNC)
+        texts = [m["text"] for m in bob_sent[1]["messages"]]
+        self.assertEqual(texts, ["tin nhan cu 1", "tin nhan cu 2"])
+        self.assertTrue(all(m["conv_id"] == "#dev" for m in bob_sent[1]["messages"]))
+
 
 if __name__ == "__main__":
     unittest.main()

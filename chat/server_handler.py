@@ -204,6 +204,22 @@ def handle_history_request(
     })
 
 
+def _send_room_history(context: ClientContext, room_id: str, limit: int = 100) -> None:
+    """Push recent persisted messages of a room to a user who just joined it."""
+    if _history_store is None:
+        return
+    try:
+        messages = _history_store.get_room_history(room_id, limit=limit)
+    except Exception:
+        return
+    if messages:
+        context.send({
+            "type": mt.HISTORY_SYNC,
+            "messages": messages,
+            "transfers": [],
+        })
+
+
 def handle_room_create(context: ClientContext, message: dict) -> None:
     """Create or join a named chat room."""
     try:
@@ -230,6 +246,7 @@ def handle_room_create(context: ClientContext, message: dict) -> None:
         "message": msg,
         "members": members,
     })
+    _send_room_history(context, room_id)
 
 
 def handle_room_join(context: ClientContext, message: dict) -> None:
@@ -258,6 +275,7 @@ def handle_room_join(context: ClientContext, message: dict) -> None:
         "message": msg,
         "members": members,
     })
+    _send_room_history(context, room_id)
 
 
 def handle_room_leave(context: ClientContext, message: dict) -> None:
@@ -351,6 +369,24 @@ def handle_room_message(context: ClientContext, message: dict) -> None:
     })
 
 
+def handle_p2p_chat_signal(context: ClientContext, message: dict) -> None:
+    """Relay P2P_CHAT_OFFER / P2P_CHAT_ACCEPT signaling frames between two peers."""
+    try:
+        recipient = normalize_username(message.get("recipient"))
+    except ValueError:
+        _send_delivery_error(context, "INVALID_RECIPIENT", "Username người nhận không hợp lệ.")
+        return
+
+    if recipient == context.username:
+        _send_delivery_error(context, "RECIPIENT_SELF", "Không thể kết nối P2P với chính mình.")
+        return
+
+    forwarded = dict(message)
+    forwarded["sender"] = context.username
+    if not context.send_to_user(recipient, forwarded):
+        _send_delivery_error(context, "RECIPIENT_OFFLINE", f"{recipient} hiện không online.")
+
+
 def register_chat_handlers(dispatcher: MessageDispatcher, history_store=None) -> None:
     """Register chat handlers with the shared server dispatcher."""
     set_history_store(history_store)
@@ -363,3 +399,5 @@ def register_chat_handlers(dispatcher: MessageDispatcher, history_store=None) ->
     dispatcher.register(mt.ROOM_LEAVE, handle_room_leave)
     dispatcher.register(mt.ROOM_LIST, handle_room_list)
     dispatcher.register(mt.ROOM_MESSAGE, handle_room_message)
+    dispatcher.register(mt.P2P_CHAT_OFFER, handle_p2p_chat_signal)
+    dispatcher.register(mt.P2P_CHAT_ACCEPT, handle_p2p_chat_signal)

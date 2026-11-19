@@ -42,6 +42,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QComboBox,
     QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
@@ -1146,6 +1147,22 @@ class MainWindow(QMainWindow):
         self.kv_tls_val = self._add_kv_row(cc_layout, "Giao thức TLS", "TLS Verified")
         self.kv_cipher_val = self._add_kv_row(cc_layout, "Mã hóa", "AES-256", last=True)
 
+        mode_row = QHBoxLayout()
+        mode_row.setContentsMargins(0, 8, 0, 4)
+        mode_row.setSpacing(8)
+        mode_lbl = QLabel("Chế độ")
+        mode_lbl.setObjectName("MutedLabel")
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("Client–Server (Mặc định)", False)
+        self.mode_combo.addItem("Ưu tiên P2P (AES-GCM)", True)
+        self.mode_combo.setToolTip(
+            "Client–Server: mọi tin & file qua Server TLS.\n"
+            "Ưu tiên P2P: thử nối thẳng AES-256-GCM cho DM/File, tự fallback về Server nếu bị NAT."
+        )
+        mode_row.addWidget(mode_lbl)
+        mode_row.addWidget(self.mode_combo, 1)
+        cc_layout.addLayout(mode_row)
+
         conn_block.addWidget(conn_card)
         insp_layout.addLayout(conn_block)
 
@@ -1246,6 +1263,7 @@ class MainWindow(QMainWindow):
         self.disconnect_button.clicked.connect(lambda: self.controller.disconnect())
         self.refresh_button.clicked.connect(self.controller.refresh_online_users)
         self.peer_search_input.textChanged.connect(lambda _txt: self._refresh_sidebar())
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self.add_room_btn.clicked.connect(self._on_add_room_clicked)
         self.channel_list.itemClicked.connect(self._on_channel_clicked)
         self.peer_list.itemClicked.connect(self._on_peer_clicked)
@@ -1273,6 +1291,7 @@ class MainWindow(QMainWindow):
         self.bridge.room_list_received.connect(self._on_room_list_received)
         self.bridge.room_status_received.connect(self._on_room_status_received)
         self.bridge.transfer_event_received.connect(self._on_transfer_event)
+        self.bridge.p2p_mode_changed.connect(self._on_p2p_mode_synced)
         self.bridge.server_error_received.connect(self._on_server_error)
         self.bridge.disconnected.connect(self._on_disconnected)
 
@@ -1597,6 +1616,21 @@ class MainWindow(QMainWindow):
     def _poll_workspace_state(self) -> None:
         self.controller.refresh_online_users()
         self.controller.refresh_rooms()
+
+    def _on_mode_changed(self) -> None:
+        p2p_on = bool(self.mode_combo.currentData())
+        self.controller.set_p2p_mode(p2p_on)
+        label = "Ưu tiên P2P (AES-256-GCM)" if p2p_on else "Client–Server (TLS Relay)"
+        self._set_transient_status(f"Đã chuyển sang chế độ: {label}")
+
+    def _on_p2p_mode_synced(self, enabled: bool) -> None:
+        target_idx = 1 if enabled else 0
+        if self.mode_combo.currentIndex() != target_idx:
+            self.mode_combo.blockSignals(True)
+            self.mode_combo.setCurrentIndex(target_idx)
+            self.mode_combo.blockSignals(False)
+        if not enabled:
+            self._set_transient_status("Đã tự động chuyển về chế độ: Client–Server (Fallback)")
 
     def _on_add_room_clicked(self) -> None:
         if self.controller.state != ConnectionState.CONNECTED:

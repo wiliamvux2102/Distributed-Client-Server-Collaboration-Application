@@ -394,6 +394,7 @@ class ClientFileTransferManager:
         status_update_fn: Callable[[], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         download_dir: str | Path = DEFAULT_DOWNLOADS_DIR,
+        enable_p2p: bool = False,
     ) -> None:
         self.username = username
         self.send_fn = send_fn
@@ -418,7 +419,12 @@ class ClientFileTransferManager:
             on_progress=self._on_progress,
             on_complete=self._on_complete_recv,
             on_error=self._on_error,
+            enable_p2p=enable_p2p,
         )
+
+    def set_p2p_enabled(self, enabled: bool) -> None:
+        """Toggle P2P mode on the underlying FileReceiver."""
+        self.receiver.set_p2p_enabled(enabled)
 
     def cleanup(self, reason: str = "Client disconnected") -> None:
         """Abort all active uploads and downloads, cleaning up all temporary files."""

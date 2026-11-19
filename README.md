@@ -6,9 +6,9 @@ Hệ thống chat và truyền tập tin theo mô hình Client–Server hỗ tr�
 
 - **Khám phá máy chủ tự động (LAN Discovery):** Client tự động dò tìm máy chủ trong mạng LAN qua `UDP_DISCOVER` hoặc cho phép chỉ định trực tiếp `<host>:<port>`.
 - **Bảo mật kênh truyền & Phiên hoạt động:** Kết nối TCP được bọc TLS (`>= TLSv1.2`, xác thực CA riêng và SNI `collab-server.local`); cơ chế `UDP_HEARTBEAT` sử dụng chữ ký HMAC-SHA256 kèm mốc thời gian Unix mili-giây tăng nghiêm ngặt để phát hiện mất kết nối và chống giả mạo/replay.
-- **Nhắn tin thời gian thực & Phòng chat:** Hỗ trợ chat chung (`#all`), chat riêng 1–1 (`DIRECT_MESSAGE`) và phòng chat theo nhóm (`ROOM_CREATE`/`ROOM_JOIN`/`ROOM_MESSAGE`) kèm phản hồi trạng thái giao nhận (`DELIVERY_STATUS`).
+- **Nhắn tin thời gian thực & Phòng chat:** Hỗ trợ chat chung (`#all`), chat riêng 1–1 (`DIRECT_MESSAGE`) và phòng chat theo nhóm (`ROOM_CREATE`/`ROOM_JOIN`/`ROOM_MESSAGE`) kèm phản hồi trạng thái giao nhận (`DELIVERY_STATUS`). Khi người dùng tham gia phòng (`ROOM_JOIN`/`ROOM_CREATE`), máy chủ tự động đẩy ngay lịch sử tin nhắn của phòng đó (`HISTORY_SYNC`).
 - **Lưu lịch sử bền vững (SQLite):** Máy chủ lưu lịch sử tin nhắn (`#all`, DM, phòng chat), danh sách phòng và nhật ký truyền tập tin vào `data/collab_history.db`, tự động đồng bộ lại khi người dùng đăng nhập hoặc gọi `/history`.
-- **Truyền tập tin an toàn (Hybrid P2P + Relay):** Ưu tiên kết nối TCP trực tiếp P2P mã hóa **AES-256-GCM** (dùng khóa dẫn xuất từ `p2p_token` trao đổi qua TLS, không qua Base64) và tự động chuyển về Server Relay theo chunk 64 KB khi bị NAT/Firewall chặn; kiểm tra toàn vẹn SHA-256, ghi tệp tạm `.part` và hỗ trợ gửi 1–1, trong phòng hoặc tới mọi người (`all` / `#all`).
+- **Chế độ Client–Server (Mặc định) & Tùy chọn P2P (AES-256-GCM):** Mặc định mọi tin nhắn và tập tin đi qua Server TLS Relay. Người dùng có thể chuyển sang chế độ **Ưu tiên P2P** (qua dropdown trên GUI hoặc lệnh `/mode p2p|server` trên CLI) để truyền trực tiếp cả **tin nhắn DM 1–1** lẫn **tập tin** qua TCP mã hóa **AES-256-GCM** (khóa dẫn xuất từ `p2p_token` trao đổi qua TLS); nếu đối phương dùng `Client–Server` hoặc bị NAT/Firewall chặn, hệ thống tự động fallback về Server Relay và đồng bộ lại trạng thái chế độ trên giao diện. Kiểm tra toàn vẹn SHA-256, ghi tệp tạm `.part` và hỗ trợ gửi file 1–1, trong phòng hoặc tới mọi người (`all` / `#all`).
 - **Hai chế độ giao diện Client:**
   - **Desktop GUI (`PySide6`):** Quản lý kênh `#all`, phòng chat (`+ Phòng`), hội thoại riêng, đếm tin chưa đọc, khung soạn thảo đa dòng và khung theo dõi tiến độ truyền file theo thời gian thực.
   - **CLI (`prompt_toolkit`):** Hỗ trợ đầy đủ lệnh tương tác với thanh trạng thái tiến độ một dòng ở đáy màn hình, không làm gián đoạn luồng đọc tin nhắn.
@@ -95,7 +95,7 @@ Các lệnh trong CLI (hoặc nhập văn bản trực tiếp để gửi chat c
 
 ## Kiểm thử tự động
 
-Chạy toàn bộ **143** unit test và integration test (bao gồm kiểm thử loopback trực tiếp qua UDP + TLS, SQLite, P2P AES-256-GCM và Room chat):
+Chạy toàn bộ **148** unit test và integration test (bao gồm kiểm thử loopback trực tiếp qua UDP + TLS, SQLite, P2P AES-256-GCM cho chat & truyền file, và Room chat):
 
 ```bash
 python -m unittest discover -s tests -t . -v

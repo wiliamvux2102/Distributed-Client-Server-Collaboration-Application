@@ -12,7 +12,7 @@ Hệ thống kiểm thử tự động sử dụng thư viện chuẩn `unittest
   ```bash
   python -m tests.transfer.quick_local_test
   ```
-- Tổng số ca kiểm thử tự động: **143 tests** — kết quả **143/143 đạt (`OK`)** (không lỗi, không cảnh báo rò rỉ file handle).
+- Tổng số ca kiểm thử tự động: **148 tests** — kết quả **148/148 đạt (`OK`)** (không lỗi, không cảnh báo rò rỉ file handle).
 
 ## Phạm vi kiểm thử theo phân hệ
 
@@ -23,12 +23,13 @@ Hệ thống kiểm thử tự động sử dụng thư viện chuẩn `unittest
 - Kiểm tra tính toàn vẹn của phiên vừa đăng nhập lại khi luồng kết nối cũ thoát muộn; kiểm tra đầu vào `ClientSession.connect` và đóng an toàn trong `logout`.
 - **Kiểm thử Live TLS + UDP Loopback E2E:** Khởi chạy server thật với chứng chỉ TLS (`certs/`) và UDP service thật trên cổng ephemeral; chạy trọn quy trình `discover_server()`, đăng nhập 2 client `alice` và `bob`, giữ heartbeat HMAC, trao đổi tin nhắn broadcast/direct và truyền file nhị phân đa chunk (~78 KB) kèm kiểm chứng SHA-256 tệp đích.
 
-### 2. Nghiệp vụ Chat, Phòng chat & Giao diện dòng lệnh (`tests/chat/`) — 10 tests
+### 2. Nghiệp vụ Chat, Phòng chat & Giao diện dòng lệnh (`tests/chat/`) — 15 tests
 - Chặn gửi tin nhắn riêng cho chính bản thân ở cả server handler và CLI.
 - Từ chối chuỗi Unicode surrogate không hợp lệ ở cả `ClientChat` và server mà không làm văng exception kết nối.
 - Đảm bảo callback báo lỗi của UI không làm sập luồng đọc mạng nền; kiểm tra luồng in bất đồng bộ tương thích `prompt_toolkit`.
 - Kiểm tra hướng dẫn cú pháp cho lệnh thiếu đối số (`/msg`, `/all`, `/sendfile`) và hoàn tác hàng đợi `/sendfile all` khi gửi yêu cầu `LIST_ONLINE` thất bại.
-- `test_rooms.py`: Kiểm tra chuẩn hóa tên phòng, tạo/tham gia/rời/liệt kê phòng, chặn gửi tin khi chưa vào phòng (`NOT_ROOM_MEMBER`), lưu thành viên và lịch sử phòng vào SQLite, đồng bộ `ROOM_DELIVERY` trên `ClientChat` và `ChatSessionStore`.
+- `test_rooms.py`: Kiểm tra chuẩn hóa tên phòng, tạo/tham gia/rời/liệt kê phòng, chặn gửi tin khi chưa vào phòng (`NOT_ROOM_MEMBER`), lưu thành viên và lịch sử phòng vào SQLite, đẩy ngay `HISTORY_SYNC` khi vừa tham gia phòng, và đồng bộ `ROOM_DELIVERY` trên `ClientChat` và `ChatSessionStore`.
+- `test_p2p_chat.py`: Kiểm tra chế độ mặc định là `Client–Server` (`enable_p2p=False`), truyền tin nhắn DM trực tiếp qua TCP mã hóa **AES-256-GCM** (`P2P_CHAT_OFFER` / `P2P_CHAT_ACCEPT`), từ chối khi đối phương tắt P2P để fallback về Server Relay, và đóng socket sạch khi tắt P2P.
 
 ### 3. Truyền tập tin & Toàn vẹn dữ liệu (`tests/transfer/`) — 79 tests
 - `test_integrity.py`: Kiểm tra `SHA-256`, metadata tệp 0 byte / nhiều chunk, kiểm chứng size/hash và các hàm làm sạch/ràng buộc (`is_valid_transfer_id`, `is_safe_filename`, `sanitize_filename`, `parse_non_negative_int` chặn chặt `bool`/`float`/chuỗi/số âm).

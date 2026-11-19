@@ -62,7 +62,7 @@ class FileReceiver:
         on_progress: ProgressCallback | None = None,
         on_complete: CompleteCallback | None = None,
         on_error: ErrorCallback | None = None,
-        enable_p2p: bool = True,
+        enable_p2p: bool = False,
     ) -> None:
         self.username = username
         self.send_frame = send_frame_fn
@@ -77,6 +77,10 @@ class FileReceiver:
 
         self._sessions: dict[str, DownloadSession] = {}
         self._lock = threading.Lock()
+
+    def set_p2p_enabled(self, enabled: bool) -> None:
+        """Toggle opportunistic direct P2P reception for future transfers."""
+        self.enable_p2p = bool(enabled)
 
     def clean_stale_temp_files(self) -> None:
         """Remove leftover .part files from previous crashed sessions without disturbing active downloads."""

@@ -215,6 +215,37 @@ class HistoryStore:
             )
         return result
 
+    def get_room_history(self, room_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        """Return recent persisted messages for a specific chat room."""
+        bounded_limit = max(1, min(int(limit), 500))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, conv_type, conv_id, sender, recipient, text, created_at
+                FROM messages
+                WHERE conv_type = 'room' AND conv_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (room_id, bounded_limit),
+            ).fetchall()
+
+        result: list[dict[str, Any]] = []
+        for row in reversed(rows):
+            result.append(
+                {
+                    "id": row["id"],
+                    "conv_type": row["conv_type"],
+                    "conv_id": row["conv_id"],
+                    "sender": row["sender"],
+                    "recipient": row["recipient"],
+                    "text": row["text"],
+                    "is_broadcast": False,
+                    "created_at": row["created_at"],
+                }
+            )
+        return result
+
     def save_transfer_log(
         self,
         session_id: str,

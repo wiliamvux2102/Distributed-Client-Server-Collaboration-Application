@@ -11,6 +11,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from common import message_types as mt
 from common.console import configure_console_utf8
 from chat.client_chat import ClientChat
+from chat.p2p_chat import P2PChatManager
 from infrastructure.client_connection import ClientSession
 from transfer.sender import ClientFileTransferManager
 
@@ -83,6 +84,7 @@ def _print_help() -> None:
         "Lệnh sử dụng:\n"
         "  /online                 Xem danh sách người đang online\n"
         "  /history                Xem lại lịch sử chat gần đây\n"
+        "  /mode <server|p2p>      Chọn chế độ Client–Server (mặc định) hoặc ưu tiên P2P\n"
         "  /room <create|join|leave|list|msg> ...  Quản lý và chat phòng\n"
         "  /msg <user> <nội dung>  Gửi tin riêng\n"
         "  /all <nội dung>         Gửi chat chung\n"
@@ -101,6 +103,7 @@ def _process_input(
     ft_manager: ClientFileTransferManager | None = None,
     pending_broadcast_files: list[str] | None = None,
     pending_lock: threading.Lock | None = None,
+    p2p_chat: P2PChatManager | None = None,
 ) -> bool:
     """Process one user input line; return False when the CLI should exit."""
 
@@ -121,6 +124,25 @@ def _process_input(
 
     if line == "/history":
         chat.request_history(limit=20)
+        return True
+
+    if line.startswith("/mode"):
+        parts = line.split()
+        target_mode = parts[1].lower() if len(parts) == 2 else ""
+        if target_mode == "p2p":
+            if p2p_chat is not None:
+                p2p_chat.set_enabled(True)
+            if ft_manager is not None:
+                ft_manager.set_p2p_enabled(True)
+            print("[MODE] Đã bật chế độ Ưu tiên P2P (AES-256-GCM, tự fallback về Server nếu bị NAT).")
+        elif target_mode == "server":
+            if p2p_chat is not None:
+                p2p_chat.set_enabled(False)
+            if ft_manager is not None:
+                ft_manager.set_p2p_enabled(False)
+            print("[MODE] Đã chuyển về chế độ Client–Server (Mặc định).")
+        else:
+            print("Cú pháp: /mode <server|p2p>")
         return True
 
     if line.startswith("/room"):
@@ -155,8 +177,19 @@ def _process_input(
             return True
 
         with _OUTPUT_LOCK:
-            chat.send_direct(recipient, parts[2])
-            print(f"[RIÊNG tới {recipient}] {parts[2]}")
+            if p2p_chat is not None and p2p_chat.enabled:
+                if p2p_chat.send_direct(recipient, parts[2]):
+                    print(f"[RIÊNG tới {recipient}] {parts[2]}")
+                else:
+                    p2p_chat.set_enabled(False)
+                    if ft_manager is not None:
+                        ft_manager.set_p2p_enabled(False)
+                    print("[MODE] Đối phương dùng Client–Server hoặc bị NAT — đã tự chuyển về Client–Server.")
+                    chat.send_direct(recipient, parts[2])
+                    print(f"[RIÊNG tới {recipient}] {parts[2]}")
+            else:
+                chat.send_direct(recipient, parts[2])
+                print(f"[RIÊNG tới {recipient}] {parts[2]}")
         return True
 
     if line == "/all" or line.startswith("/all "):
@@ -306,8 +339,17 @@ def main() -> None:
             send_fn=session.send,
             print_fn=_print_async,
             status_update_fn=prompt_session.app.invalidate,
+            enable_p2p=False,
         )
         ft_manager.register_handlers(session.register_handler)
+
+        p2p_chat = P2PChatManager(
+            username=session.username,
+            send_signal_fn=session.send,
+            on_message=lambda sender, text: _print_async(f"[RIÊNG từ {sender}] {text}"),
+            enabled=False,
+        )
+        p2p_chat.register_handlers(session.register_handler)
 
         pending_broadcast_files: list[str] = []
         pending_lock = threading.Lock()
@@ -378,6 +420,7 @@ def main() -> None:
                         ft_manager,
                         pending_broadcast_files=pending_broadcast_files,
                         pending_lock=pending_lock,
+                        p2p_chat=p2p_chat,
                     ):
                         break
                 except (OSError, RuntimeError, ValueError) as error:
@@ -392,6 +435,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nĐã nhận Ctrl+C, đang đóng phiên.")
     finally:
+        if "p2p_chat" in locals() and p2p_chat is not None:
+            p2p_chat.close_all()
         if ft_manager is not None:
             ft_manager.cleanup("Client disconnected")
         if session is not None:

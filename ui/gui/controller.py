@@ -15,6 +15,7 @@ import uuid
 from PySide6.QtCore import QObject, Signal
 
 from chat.client_chat import ClientChat
+from chat.p2p_chat import P2PChatManager
 from common import message_types as mt
 from infrastructure.client_connection import ClientSession
 from transfer.sender import ClientFileTransferManager
@@ -132,6 +133,7 @@ class GuiSessionBridge(QObject):
     room_list_received = Signal(object)
     room_status_received = Signal(object)
     transfer_event_received = Signal(object)
+    p2p_mode_changed = Signal(bool)
     server_error_received = Signal(object)
     disconnected = Signal(object)
 
@@ -149,7 +151,9 @@ class SessionController:
         self._session_gen = 0
         self._session: ClientSession | None = None
         self._chat: ClientChat | None = None
+        self._p2p_chat: P2PChatManager | None = None
         self._ft_manager: ClientFileTransferManager | None = None
+        self._p2p_enabled = False
         self._progress_last_emit: dict[str, float] = {}
         self._broadcast_batches: dict[str, tuple[str, int]] = {}
         self._batch_tls = threading.local()
@@ -275,12 +279,31 @@ class SessionController:
             )
             chat.register_handlers(session.register_handler)
 
+            with self._lock:
+                p2p_enabled = self._p2p_enabled
+
+            p2p_chat = P2PChatManager(
+                username=session.username,
+                send_signal_fn=session.send,
+                on_message=lambda sender, text: self.bridge.message_received.emit(
+                    ChatMessageEvent(
+                        gen=gen,
+                        sender=sender,
+                        text=text,
+                        is_broadcast=False,
+                    )
+                ),
+                enabled=p2p_enabled,
+            )
+            p2p_chat.register_handlers(session.register_handler)
+
             ft_manager = ClientFileTransferManager(
                 username=session.username,
                 send_fn=session.send,
                 print_fn=lambda _text: None,
                 status_update_fn=None,
                 on_event=lambda payload: self._on_transfer_event(gen, payload),
+                enable_p2p=p2p_enabled,
             )
             ft_manager.register_handlers(session.register_handler)
 
@@ -310,6 +333,7 @@ class SessionController:
                     return
                 self._session = session
                 self._chat = chat
+                self._p2p_chat = p2p_chat
                 self._ft_manager = ft_manager
                 self._state = ConnectionState.CONNECTED
 
@@ -390,13 +414,20 @@ class SessionController:
                 return
             self._state = ConnectionState.DISCONNECTED
             ft = self._ft_manager
+            p2p_chat = self._p2p_chat
             session = self._session
             self._ft_manager = None
+            self._p2p_chat = None
             self._session = None
             self._chat = None
             self._progress_last_emit.clear()
             self._broadcast_batches.clear()
 
+        if p2p_chat is not None:
+            try:
+                p2p_chat.close_all()
+            except Exception:
+                pass
         if ft is not None:
             try:
                 ft.cleanup("Connection lost")
@@ -523,13 +554,67 @@ class SessionController:
                 return
         self._submit_worker(self._send_chat_safe, gen, chat.send_broadcast, text)
 
+    def set_p2p_mode(self, enabled: bool) -> None:
+        """Switch between default Client-Server Relay mode and optional P2P Direct mode."""
+        with self._lock:
+            self._p2p_enabled = bool(enabled)
+            ft = self._ft_manager
+            p2p_chat = self._p2p_chat
+        if ft is not None:
+            ft.set_p2p_enabled(bool(enabled))
+        if p2p_chat is not None:
+            p2p_chat.set_enabled(bool(enabled))
+
+    @property
+    def p2p_enabled(self) -> bool:
+        with self._lock:
+            return self._p2p_enabled
+
     def send_direct(self, recipient: str, text: str) -> None:
         with self._lock:
             gen = self._session_gen
             chat = self._chat
+            p2p_chat = self._p2p_chat
+            p2p_enabled = self._p2p_enabled
             if self._state != ConnectionState.CONNECTED or chat is None:
                 return
-        self._submit_worker(self._send_chat_safe, gen, chat.send_direct, recipient, text)
+        self._submit_worker(
+            self._send_direct_worker,
+            gen,
+            chat,
+            p2p_chat,
+            p2p_enabled,
+            recipient,
+            text,
+        )
+
+    def _send_direct_worker(
+        self,
+        gen: int,
+        chat: ClientChat,
+        p2p_chat: P2PChatManager | None,
+        p2p_enabled: bool,
+        recipient: str,
+        text: str,
+    ) -> None:
+        if p2p_enabled and p2p_chat is not None:
+            try:
+                if p2p_chat.send_direct(recipient, text):
+                    self.bridge.delivery_status_received.emit(
+                        DeliveryStatusEvent(
+                            gen=gen,
+                            ok=True,
+                            message=f"Đã gửi trực tiếp (P2P AES-256-GCM) tới {recipient}.",
+                            code=None,
+                            delivered_count=None,
+                        )
+                    )
+                    return
+            except Exception:
+                pass
+            self.set_p2p_mode(False)
+            self.bridge.p2p_mode_changed.emit(False)
+        self._send_chat_safe(gen, chat.send_direct, recipient, text)
 
     def create_room(self, room_id: str) -> None:
         with self._lock:
@@ -759,8 +844,10 @@ class SessionController:
             self._session_gen += 1
             session = self._session
             ft_manager = self._ft_manager
+            p2p_chat = self._p2p_chat
             self._session = None
             self._chat = None
+            self._p2p_chat = None
             self._ft_manager = None
             self._state = ConnectionState.DISCONNECTED
             self._progress_last_emit.clear()
@@ -770,6 +857,8 @@ class SessionController:
 
         def _cleanup() -> None:
             try:
+                if p2p_chat is not None:
+                    p2p_chat.close_all()
                 if ft_manager is not None:
                     ft_manager.cleanup("Application closing")
                 if session is not None:

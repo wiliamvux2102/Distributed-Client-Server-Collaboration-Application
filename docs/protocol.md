@@ -47,6 +47,9 @@ Mỗi thông điệp trên kênh TCP/TLS có cấu trúc:
 - **Phản hồi trạng thái tới người gửi (`DELIVERY_STATUS`):**
   - Chứa `ok` (`bool`), `message` (`str`), cùng `delivered_count` (khi broadcast thành công) hoặc `code` (khi thất bại).
   - Các mã lỗi `DELIVERY_STATUS`: `INVALID_RECIPIENT`, `RECIPIENT_SELF`, `INVALID_TEXT`, `MESSAGE_TOO_LARGE`, `RECIPIENT_OFFLINE`.
+- **Signaling P2P cho Chat riêng 1–1 (tùy chọn khi bật chế độ P2P):**
+  - `P2P_CHAT_OFFER` (`Sender -> Server -> Receiver`): đề nghị mở kênh TCP trực tiếp cho DM.
+  - `P2P_CHAT_ACCEPT` (`Receiver -> Server -> Sender`): trả về `accepted` (`bool`), cùng `p2p_hosts`, `p2p_port`, `p2p_token` nếu chấp nhận; nếu `accepted=False` hoặc quá hạn, bên gửi tự fallback sang `DIRECT_MESSAGE` qua Server Relay và đồng bộ lại chế độ về `Client–Server`.
 
 ---
 
