@@ -546,4 +546,46 @@ def build_stylesheet(mode: str = "dark") -> str:
     QMenu::item:selected {{
         background-color: {p["bg_elevated"]};
     }}
+
+    /* ComboBox & Dropdown Popup */
+    QComboBox {{
+        background-color: {p["bg_panel"]};
+        color: {p["text_primary"]};
+        border: 1px solid {p["border_strong"]};
+        border-radius: 8px;
+        padding: 5px 10px;
+        font-size: 9pt;
+    }}
+
+    QComboBox:hover {{
+        border-color: {p["text_muted"]};
+    }}
+
+    QComboBox:focus {{
+        border-color: {p["border_focus"]};
+    }}
+
+    QComboBox::drop-down {{
+        subcontrol-origin: padding;
+        subcontrol-position: top right;
+        width: 22px;
+        border: none;
+    }}
+
+    QComboBox QAbstractItemView {{
+        background-color: {p["bg_card"]};
+        color: {p["text_primary"]};
+        border: 1px solid {p["border_strong"]};
+        border-radius: 8px;
+        padding: 4px;
+        selection-background-color: {p["brand_soft"]};
+        selection-color: {p["brand_soft_text"]};
+        outline: 0;
+    }}
+
+    QComboBox QAbstractItemView::item {{
+        padding: 6px 10px;
+        border-radius: 6px;
+        min-height: 22px;
+    }}
     """
